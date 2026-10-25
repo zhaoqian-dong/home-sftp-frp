@@ -3,6 +3,20 @@
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
 项目暂未启用版本号，按日期分组，最新在前。
 
+## 2026-10-26 · 安全加固
+
+- **frps 端口白名单**：`allowPorts` 锁定到 SFTP 公网端口 + `maxPortsPerClient = 1`——
+  token 泄露时攻击者也无法在 VPS 上另开反向代理端口当跳板；
+- **下载完整性**：frp（linux amd64/arm64、windows zip）、WinSW、OpenSSH 独立版的官方
+  sha256 固化进脚本逐源校验，不符即丢弃换源；镜像仅在哈希可得时作为回退，
+  未内置哈希的版本自动从官方 `frp_sha256_checksums.txt` 获取，拿不到则禁用镜像仅 GitHub 直连；
+- **上传账号只许 SFTP**：secedit 给 sftpusers 组写入"拒绝本地/远程交互登录"（合并既有
+  SeDeny 条目、幂等），账号无法在 Windows 登录界面或 RDP 登录；
+- **爆破缓解**：家庭 sshd Match 块加 `MaxAuthTries 3`；22/6022 改 `ufw limit` 连接限速
+  （长连接不受影响）；新增可选机器级账户锁定 `SFTP_LOCKOUT_THRESHOLD`（全机生效，默认关闭）；
+- **VPS 自动安全更新**：安装并启用 unattended-upgrades；
+- `check-vps.sh` 新增 allowPorts 与自动更新检查；`uninstall-vps.sh` 兼容删除 limit/allow 两种规则。
+
 ## 2026-10-26 · 功能扩展
 
 - **账号全生命周期**：新增 `list-sftp-users.ps1`（账号/占用/配额一览，游离成员告警）与

@@ -71,6 +71,11 @@ if [ -f /etc/frp/frps.toml ]; then
     else
         warn "配置缺少 kcpBindPort（kcp 模式不可用，重跑 setup-vps.sh 更新）"
     fi
+    if grep -q '^allowPorts' /etc/frp/frps.toml; then
+        ok "已配置端口白名单（allowPorts，token 泄露也无法另开端口）"
+    else
+        warn "配置缺少 allowPorts 端口白名单 —— token 泄露时 VPS 可能被当跳板（重跑 setup-vps.sh）"
+    fi
 else
     bad "配置文件 /etc/frp/frps.toml 不存在"
 fi
@@ -127,7 +132,14 @@ else
     warn "fail2ban 未运行（SSH 爆破无防护，建议重跑 setup-vps.sh）"
 fi
 
-# ---------- 8. 隧道连通性（免凭据） ----------
+# ---------- 8. 自动安全更新 ----------
+if [ "$(systemctl is-enabled unattended-upgrades 2>/dev/null || true)" = "enabled" ]; then
+    ok "unattended-upgrades 自动安全更新已启用"
+else
+    warn "自动安全更新未启用（长期运行的 VPS 建议开启，重跑 setup-vps.sh）"
+fi
+
+# ---------- 9. 隧道连通性（免凭据） ----------
 banner="$(timeout 5 bash -c "exec 3<>/dev/tcp/127.0.0.1/${SFTP_PUBLIC_PORT} && head -c 4 <&3" 2>/dev/null || true)"
 if [ "${banner:-}" = "SSH-" ]; then
     ok "隧道连通：127.0.0.1:${SFTP_PUBLIC_PORT} 返回 SSH banner（家里 frpc 已挂载）"

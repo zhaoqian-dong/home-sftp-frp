@@ -61,9 +61,11 @@ info "已移除本项目 jail（fail2ban 本体保留，仍保护你的 SSH）"
 
 # ---------- 3. ufw 规则 ----------
 step "3/3 移除 ufw 中 frp 相关规则"
+# 兼容历史部署：放行规则可能是 allow（旧版脚本）或 limit（新版脚本）
 ufw delete allow "${FRP_BIND_PORT}/tcp"    >/dev/null 2>&1 || true
 ufw delete allow "${FRP_BIND_PORT}/udp"    >/dev/null 2>&1 || true
 ufw delete allow "${SFTP_PUBLIC_PORT}/tcp" >/dev/null 2>&1 || true
+ufw delete limit "${SFTP_PUBLIC_PORT}/tcp" >/dev/null 2>&1 || true
 info "已移除 ${FRP_BIND_PORT}(TCP+UDP) / ${SFTP_PUBLIC_PORT} 的放行规则（保留 22 与 ufw 本体）"
 
 # ---------- 摘要 ----------
@@ -74,7 +76,8 @@ echo -e "${CYAN}============================================================${NC
 cat <<INFO
 
   已移除：frps 服务/二进制/配置/日志、本项目 fail2ban jail、frp 端口放行规则
-  保留  ：ufw（仅放行 22）、fail2ban（sshd 防爆破）
+  保留  ：ufw（仅 22 为 limit 限速）、fail2ban（sshd 防爆破）、
+          unattended-upgrades 自动安全更新
 
   如需彻底清理残留组件（一般不建议，它们仍在保护你的 SSH）：
     apt-get remove --purge -y fail2ban     # 移除 fail2ban

@@ -15,6 +15,14 @@ bindPort = 7000
 # 云防火墙需额外放行 UDP 同端口
 kcpBindPort = 7000
 
+# 反向代理端口白名单：即使 token 泄露，攻击者也无法在 VPS 上
+# 开其他端口的反代（防止 VPS 被当跳板）。新增代理端口时需同步调整此处
+allowPorts = [
+    { single = 6022 }
+]
+# 每个客户端最多注册 1 个代理端口
+maxPortsPerClient = 1
+
 # 令牌认证：frpc 必须携带相同 token 才能连接
 auth.method = "token"
 auth.token = "__FRP_TOKEN__"

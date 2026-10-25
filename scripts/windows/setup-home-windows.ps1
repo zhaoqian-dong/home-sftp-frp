@@ -69,16 +69,46 @@ function Get-EnvMap {
     return $map
 }
 
-# 多源下载：GitHub 直连失败自动回退国内加速镜像（用系统自带 curl.exe）
+# 多源下载：GitHub 直连失败自动回退国内加速镜像（用系统自带 curl.exe）。
+# 提供 $Sha256 时逐源校验，不符则丢弃换下一源 —— 镜像投毒被挡在校验之外
 function Invoke-Download {
-    param([string[]]$Urls, [string]$OutFile, [int]$MinBytes = 100000)
+    param([string[]]$Urls, [string]$OutFile, [int]$MinBytes = 100000, [string]$Sha256 = '')
     foreach ($u in $Urls) {
         Write-Info "下载：$u"
         $rc = Invoke-Native 'curl.exe' @('-fsSL', '--connect-timeout', '10', '--retry', '2', '-o', $OutFile, $u)
-        if ($rc -eq 0 -and (Test-Path $OutFile) -and ((Get-Item $OutFile).Length -ge $MinBytes)) { return }
-        Write-Warn2 "下载失败，尝试下一个源..."
+        if ($rc -ne 0 -or -not (Test-Path $OutFile) -or ((Get-Item $OutFile).Length -lt $MinBytes)) {
+            Write-Warn2 "下载失败，尝试下一个源..."
+            continue
+        }
+        if ($Sha256) {
+            $actual = (Get-FileHash -Path $OutFile -Algorithm SHA256).Hash.ToLower()
+            if ($actual -ne $Sha256.ToLower()) {
+                Write-Warn2 "sha256 校验不符（期望 $Sha256，实际 $actual），丢弃并尝试下一个源..."
+                Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
+                continue
+            }
+            Write-Info "sha256 校验通过"
+        }
+        return
     }
     Write-Fail "所有下载源均失败，请检查网络；也可手动下载后放到 $env:TEMP 再重跑"
+}
+
+# 解析 frp 发布包的期望 sha256：内置版本用固化值（来源官方 frp_sha256_checksums.txt）；
+# 其他版本现场从官方 checksums 获取；拿不到则返回 $null（调用方应禁用镜像、仅 GitHub 直连）
+function Get-FrpZipSha256 {
+    param([string]$Version, [string]$ZipName, [string]$ReleaseUrl)
+    if ($Version -eq '0.71.1') {
+        return 'b90074b2b6a1d792a7a40f085ac6d276bcab2d1bc60201f8a86ca53ce65ce821'
+    }
+    $ck = Join-Path $env:TEMP 'frp_sha256_checksums.txt'
+    $rc = Invoke-Native 'curl.exe' @('-fsSL', '--connect-timeout', '10', '--max-time', '60',
+        '-o', $ck, "$ReleaseUrl/frp_sha256_checksums.txt")
+    if ($rc -eq 0 -and (Test-Path $ck)) {
+        $line = Get-Content -Path $ck | Where-Object { $_ -match [regex]::Escape($ZipName) } | Select-Object -First 1
+        if ($line) { return ($line.Trim() -split '\s+')[0] }
+    }
+    return $null
 }
 
 function Write-FileNoBom {
@@ -92,6 +122,43 @@ function Get-LanIp {
         Where-Object { $_.IPAddress -notmatch '^(127\.|169\.254\.)' } |
         Select-Object -First 1
     if ($ip) { $ip.IPAddress } else { '<本机局域网IP>' }
+}
+
+# 通过 secedit 给本地组写入"拒绝交互式登录"与"拒绝远程交互式登录"（RDP）权限：
+# 上传账号只能走 SFTP（网络登录），无法在 Windows 登录界面或 RDP 登录。
+# 做法：导出当前策略 -> 在既有 SeDeny* 值上合并本组 SID（保留 Guest 等原条目）-> 回写。
+# 幂等：SID 已存在则不重复添加；只回写这两个权限项，其余策略不受影响
+function Grant-SftpGroupNoInteractiveLogon {
+    param([string]$GroupName)
+    $sid    = (Get-LocalGroup -Name $GroupName).SID.Value
+    $export = Join-Path $env:TEMP 'secedit-export.inf'
+    $cfg    = Join-Path $env:TEMP 'secedit-sftp.inf'
+    if ((Invoke-Native 'secedit.exe' @('/export', '/cfg', $export, '/quiet')) -ne 0) {
+        throw 'secedit /export 失败'
+    }
+    $rights = @{}
+    foreach ($right in @('SeDenyInteractiveLogonRight', 'SeDenyRemoteInteractiveLogonRight')) {
+        $line = Get-Content -Path $export | Where-Object { $_ -match "^$right\s*=" } | Select-Object -First 1
+        $values = @()
+        if ($line) { $values = ($line -split '=', 2)[1].Trim() -split '\s*,\s*' | Where-Object { $_ } }
+        if ($values -notcontains "*$sid") { $values += "*$sid" }
+        $rights[$right] = $values -join ','
+    }
+    $nl = "`r`n"
+    $inf = "[Unicode]$nl" +
+        "Unicode=yes$nl" +
+        "[Privilege Rights]$nl" +
+        "SeDenyInteractiveLogonRight = $($rights['SeDenyInteractiveLogonRight'])$nl" +
+        "SeDenyRemoteInteractiveLogonRight = $($rights['SeDenyRemoteInteractiveLogonRight'])$nl" +
+        "[Version]$nl" +
+        'signature="$CHICAGO$"' + $nl +
+        'Revision=1' + $nl
+    [System.IO.File]::WriteAllText($cfg, $inf, (New-Object System.Text.UnicodeEncoding))
+    if ((Invoke-Native 'secedit.exe' @('/configure', '/db',
+        "$env:windir\security\database\secedit.sdb", '/cfg', $cfg, '/quiet')) -ne 0) {
+        throw 'secedit /configure 失败'
+    }
+    Remove-Item -LiteralPath $export, $cfg -Force -ErrorAction SilentlyContinue
 }
 
 # ---------------------------------------------------------------- 0. 前置检查
@@ -141,10 +208,11 @@ if ($cap -and $cap.State -eq 'Installed') {
         # 回退方案：GitHub 官方 Win32-OpenSSH 独立版
         Write-Info "回退：从 GitHub 安装 Win32-OpenSSH 独立版..."
         $sshZip = Join-Path $env:TEMP 'OpenSSH-Win64.zip'
+        # 哈希来自官方 GitHub 直连下载的 v9.5.0.0p1-Beta（官方未发布 checksums 文件）
         Invoke-Download -Urls @(
             'https://github.com/PowerShell/Win32-OpenSSH/releases/download/v9.5.0.0p1-Beta/OpenSSH-Win64.zip',
             'https://gh-proxy.com/https://github.com/PowerShell/Win32-OpenSSH/releases/download/v9.5.0.0p1-Beta/OpenSSH-Win64.zip'
-        ) -OutFile $sshZip
+        ) -OutFile $sshZip -Sha256 'bd48fe985d400402c278c485db20e6a82bc4c7f7d8e0ef5a81128f523096530c'
         $sshDir = 'C:\Program Files\OpenSSH'
         if (Test-Path "$env:TEMP\OpenSSH-Win64") { Remove-Item -Recurse -Force "$env:TEMP\OpenSSH-Win64" }
         Expand-Archive -Path $sshZip -DestinationPath $env:TEMP -Force
@@ -197,6 +265,14 @@ $icaclsArgs = @($SftpRoot, '/inheritance:r', '/grant:r',
 if ((Invoke-Native 'icacls.exe' $icaclsArgs) -ne 0) { Write-Fail "icacls 设置根目录 ACL 失败" }
 Write-Info "SFTP 根目录 ACL 已加固：$SftpRoot"
 
+# 上传账号只允许 SFTP：拒绝整个组的本地登录与 RDP（组级权限，对全部成员生效）
+try {
+    Grant-SftpGroupNoInteractiveLogon -GroupName $SftpGroup
+    Write-Info "已拒绝 $SftpGroup 组的本地/RDP 交互登录（只能走 SFTP）"
+} catch {
+    Write-Fail "配置'拒绝本地登录'失败：$($_.Exception.Message)`n请确认 secedit 可用（安全策略数据库未被锁定）后重跑"
+}
+
 # ---------------------------------------------------------------- 3. 安装 frpc
 Write-Step 3 "安装 frpc v$FrpVersion"
 
@@ -212,11 +288,15 @@ if (-not $skipFrp) {
     $zipName = "frp_$($FrpVersion)_windows_amd64.zip"
     $zipPath = Join-Path $env:TEMP $zipName
     $rel = "https://github.com/fatedier/frp/releases/download/v$FrpVersion"
-    Invoke-Download -Urls @(
-        "$rel/$zipName",
-        "https://gh-proxy.com/$rel/$zipName",
-        "https://ghfast.top/$rel/$zipName"
-    ) -OutFile $zipPath
+    $zipSha = Get-FrpZipSha256 -Version $FrpVersion -ZipName $zipName -ReleaseUrl $rel
+    # 仅在能校验 sha256 时才允许第三方镜像回退（防镜像投毒）
+    $urls = @("$rel/$zipName")
+    if ($zipSha) {
+        $urls += @("https://gh-proxy.com/$rel/$zipName", "https://ghfast.top/$rel/$zipName")
+    } else {
+        Write-Warn2 "未能获取官方 sha256，已禁用镜像，仅从 GitHub 直连下载"
+    }
+    Invoke-Download -Urls $urls -OutFile $zipPath -Sha256 $zipSha
     $extractDir = Join-Path $env:TEMP "frp_$($FrpVersion)_windows_amd64"
     if (Test-Path $extractDir) { Remove-Item -Recurse -Force $extractDir }
     Expand-Archive -Path $zipPath -DestinationPath $env:TEMP -Force
@@ -282,11 +362,17 @@ Write-Step 4 "用 WinSW 将 frpc 注册为 Windows 服务"
 $winswExe = Join-Path $FrpDir 'frpc-service.exe'
 if (-not (Test-Path $winswExe)) {
     $winswRel = "https://github.com/winsw/winsw/releases/download/v$WinSwVersion"
-    Invoke-Download -Urls @(
-        "$winswRel/WinSW-x64.exe",
-        "https://gh-proxy.com/$winswRel/WinSW-x64.exe",
-        "https://ghfast.top/$winswRel/WinSW-x64.exe"
-    ) -OutFile $winswExe -MinBytes 500000
+    # WinSW 官方不发布 checksums 文件；此哈希来自官方 GitHub 直连下载的 v2.12.0
+    $winswSha = if ($WinSwVersion -eq '2.12.0') {
+        '05b82d46ad331cc16bdc00de5c6332c1ef818df8ceefcd49c726553209b3a0da'
+    } else { $null }
+    $urls = @("$winswRel/WinSW-x64.exe")
+    if ($winswSha) {
+        $urls += @("https://gh-proxy.com/$winswRel/WinSW-x64.exe", "https://ghfast.top/$winswRel/WinSW-x64.exe")
+    } else {
+        Write-Warn2 "WinSW $WinSwVersion 未内置校验值，已禁用镜像，仅从 GitHub 直连下载"
+    }
+    Invoke-Download -Urls $urls -OutFile $winswExe -Sha256 $winswSha -MinBytes 500000
 }
 $winswXml = @"
 <service>

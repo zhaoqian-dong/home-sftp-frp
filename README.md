@@ -236,9 +236,12 @@ Get-Service frpc, sshd
 | 传输 | frpc↔frps 强制 TLS；对外是标准 SSH/SFTP 加密 |
 | 认证 | frp token（32 位随机）；SFTP 每账号独立密码；VPS SSH 建议 key 登录 |
 | 隔离 | 每账号 `ChrootDirectory` 锁定自己目录 + NTFS ACL 断继承，账号间互不可见 |
-| 权限 | 上传账号是非管理员本地用户，禁 shell/端口转发/TTY，密码永不过期但不可自改 |
+| 权限 | 上传账号是非管理员本地用户，禁 shell/端口转发/TTY，**拒绝本地/RDP 交互登录**（secedit），密码永不过期但不可自改 |
+| 端口锁定 | frps `allowPorts` 白名单 + `maxPortsPerClient=1`：token 泄露也无法在 VPS 上另开端口当跳板 |
 | 暴露面 | 家庭 22 端口仅限局域网；VPS 仅开放 22/7000/6022；frp 管理面板仅回环 |
-| 爆破防护 | fail2ban（VPS sshd 5 次失败封 1 小时）；上传账号走 chroot 无法触碰其他服务 |
+| 爆破防护 | fail2ban（VPS sshd）+ `MaxAuthTries 3`（家庭 sshd）+ `ufw limit` 连接限速；可选机器级账户锁定（`SFTP_LOCKOUT_THRESHOLD`，全机生效默认关） |
+| 下载完整性 | frp / WinSW / OpenSSH 独立版均固化官方 sha256 逐源校验；镜像仅在哈希可得时作为回退 |
+| 系统更新 | VPS 启用 unattended-upgrades 自动安装安全补丁 |
 
 **已知限制（如实说明）：**
 

@@ -23,6 +23,11 @@ FRP_ETC="/etc/frp"
 FRPS_CONF="${FRP_ETC}/frps.toml"
 FRPS_LOG="/var/log/frps.log"
 
+# 内置的官方 release sha256（来源：各版本随 frp 发布的 frp_sha256_checksums.txt）。
+# 升级 FRP_VERSION 时在此补充新版本条目；未内置的版本脚本会现场从官方拉取 checksums
+FRP_SHA256_V0_71_1_AMD64="1d9875210972a5d1a62b2dc4c48df45ab0af05d3ca1b5e494a014428259df803"
+FRP_SHA256_V0_71_1_ARM64="8edf590b0c396fa42f9c147121a76af83cfc2002b08f5aef0ea1008c43482019"
+
 # ---------- 输出工具 ----------
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
@@ -61,13 +66,14 @@ case "$FRP_TRANSPORT" in
 esac
 
 # ---------- 1. 系统依赖 ----------
-step "1/5 安装系统依赖（curl unzip fail2ban ufw openssl）"
+step "1/6 安装系统依赖（curl unzip fail2ban ufw openssl unattended-upgrades）"
 PKGS=()
-command -v curl           >/dev/null 2>&1 || PKGS+=(curl)
-command -v unzip          >/dev/null 2>&1 || PKGS+=(unzip)
-command -v fail2ban-client >/dev/null 2>&1 || PKGS+=(fail2ban)
-command -v ufw            >/dev/null 2>&1 || PKGS+=(ufw)
-command -v openssl        >/dev/null 2>&1 || PKGS+=(openssl)
+command -v curl               >/dev/null 2>&1 || PKGS+=(curl)
+command -v unzip              >/dev/null 2>&1 || PKGS+=(unzip)
+command -v fail2ban-client    >/dev/null 2>&1 || PKGS+=(fail2ban)
+command -v ufw                >/dev/null 2>&1 || PKGS+=(ufw)
+command -v openssl            >/dev/null 2>&1 || PKGS+=(openssl)
+command -v unattended-upgrade >/dev/null 2>&1 || PKGS+=(unattended-upgrades)
 if [ "${#PKGS[@]}" -gt 0 ]; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -y
@@ -77,7 +83,7 @@ else
 fi
 
 # ---------- 2. token ----------
-step "2/5 准备 frp 通信令牌"
+step "2/6 准备 frp 通信令牌"
 if [ -f "$FRPS_CONF" ] && [ -z "$FRP_TOKEN" ]; then
     # 幂等：重跑且 .env 未回填时，沿用已生成的 token，避免家里 frpc 对不上
     FRP_TOKEN="$(sed -n 's/^auth\.token = "\(.*\)"$/\1/p' "$FRPS_CONF" | head -n1)"
@@ -95,7 +101,7 @@ DASH_USER="admin"
 DASH_PASSWORD="$(openssl rand -hex 8)"
 
 # ---------- 3. 下载安装 frps ----------
-step "3/5 下载并安装 frp v${FRP_VERSION}"
+step "3/6 下载并安装 frp v${FRP_VERSION}"
 ARCH="$(uname -m)"
 case "$ARCH" in
     x86_64)          FRP_ARCH="amd64" ;;
@@ -115,18 +121,39 @@ fi
 if [ "$NEED_INSTALL" -eq 1 ]; then
     FRP_PKG="frp_${FRP_VERSION}_linux_${FRP_ARCH}.tar.gz"
     RELEASE_URL="https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}"
-    # 国内 VPS 访问 GitHub 慢/失败时自动回退加速镜像
-    URLS=(
-        "${RELEASE_URL}/${FRP_PKG}"
-        "https://gh-proxy.com/${RELEASE_URL}/${FRP_PKG}"
-        "https://ghfast.top/${RELEASE_URL}/${FRP_PKG}"
-    )
     TMP_DIR="$(mktemp -d)"
     trap 'rm -rf "$TMP_DIR"' EXIT
+
+    # 期望 sha256：内置值优先；未内置的版本现场从官方 checksums 获取
+    FRP_ARCH_U="$(echo "${FRP_ARCH}" | tr 'a-z' 'A-Z')"
+    VARNAME="FRP_SHA256_V$(echo "${FRP_VERSION}" | tr '.' '_')_${FRP_ARCH_U}"
+    FRP_PKG_SHA256="${!VARNAME:-}"
+    if [ -z "$FRP_PKG_SHA256" ]; then
+        info "版本 v${FRP_VERSION} 未内置校验值，从官方获取 frp_sha256_checksums.txt..."
+        if curl -fsSL --connect-timeout 10 --max-time 60 \
+            -o "${TMP_DIR}/checksums.txt" "${RELEASE_URL}/frp_sha256_checksums.txt"; then
+            FRP_PKG_SHA256="$(awk -v pkg="${FRP_PKG}" '$2 == pkg {print $1}' "${TMP_DIR}/checksums.txt")"
+        fi
+        [ -n "$FRP_PKG_SHA256" ] || warn "无法获取官方 sha256（GitHub 直连失败）；第三方镜像已禁用，将仅从 GitHub 直连下载"
+    fi
+
+    # 下载源：GitHub 直连；仅在能校验 sha256 时才允许第三方镜像回退（防镜像投毒）
+    URLS=("${RELEASE_URL}/${FRP_PKG}")
+    if [ -n "$FRP_PKG_SHA256" ]; then
+        URLS+=("https://gh-proxy.com/${RELEASE_URL}/${FRP_PKG}" "https://ghfast.top/${RELEASE_URL}/${FRP_PKG}")
+    fi
+
     DOWNLOADED=0
     for u in "${URLS[@]}"; do
         info "尝试下载：$u"
         if curl -fSL --connect-timeout 8 --max-time 300 -o "${TMP_DIR}/${FRP_PKG}" "$u"; then
+            if [ -n "$FRP_PKG_SHA256" ]; then
+                if ! echo "${FRP_PKG_SHA256}  ${TMP_DIR}/${FRP_PKG}" | sha256sum --status -c; then
+                    warn "sha256 校验失败，丢弃该文件并尝试下一个源..."
+                    continue
+                fi
+                info "sha256 校验通过"
+            fi
             DOWNLOADED=1; break
         fi
         warn "下载失败，尝试下一个源..."
@@ -138,7 +165,7 @@ if [ "$NEED_INSTALL" -eq 1 ]; then
 fi
 
 # ---------- 4. 生成配置与 systemd 服务 ----------
-step "4/5 生成 frps.toml 与 systemd 服务"
+step "4/6 生成 frps.toml 与 systemd 服务"
 mkdir -p "$FRP_ETC"
 if [ -f "$FRPS_CONF" ]; then
     cp "$FRPS_CONF" "${FRPS_CONF}.bak.$(date +%Y%m%d%H%M%S)"
@@ -153,6 +180,14 @@ bindPort = ${FRP_BIND_PORT}
 # KCP（UDP）控制通道端口，与 TCP 同端口号互不冲突。
 # 仅当家里 frpc 配置 transport.protocol = "kcp" 时才会用到
 kcpBindPort = ${FRP_BIND_PORT}
+
+# 反向代理端口白名单：即使 token 泄露，攻击者也无法在 VPS 上
+# 开其他端口的反代（防止 VPS 被当跳板）。新增代理端口时需同步调整此处
+allowPorts = [
+    { single = ${SFTP_PUBLIC_PORT} }
+]
+# 每个客户端最多注册 1 个代理端口
+maxPortsPerClient = 1
 
 auth.method = "token"
 auth.token = "${FRP_TOKEN}"
@@ -197,7 +232,7 @@ systemctl is-active --quiet frps || fail "frps 启动失败，请查看：journa
 info "frps 服务已启动"
 
 # ---------- 5. fail2ban 与防火墙 ----------
-step "5/5 配置 fail2ban 与 ufw 防火墙"
+step "5/6 配置 fail2ban 与 ufw 防火墙"
 
 cat > /etc/fail2ban/jail.d/sshd.local <<'EOF'
 # 防止 SSH 爆破（Ubuntu 24.04 日志走 journald，需 backend=systemd）
@@ -212,13 +247,23 @@ systemctl enable --now fail2ban
 systemctl restart fail2ban
 info "fail2ban 已启用（SSH 5 次失败封禁 1 小时）"
 
-ufw allow 22/tcp comment 'SSH'                       >/dev/null
+# limit：每 IP 30 秒内超过 6 个新连接即拒绝（爆破限速），已建立的传输长连接不受影响
+ufw limit 22/tcp comment 'SSH'                       >/dev/null
 ufw allow "${FRP_BIND_PORT}/tcp" comment 'frp control' >/dev/null
-# UDP 同端口号供 KCP 模式使用；纯 tcp 模式下放行也无害
+# UDP 同端口号供 KCP 模式使用；纯 tcp 模式下放行也无害（ufw limit 仅支持 TCP）
 ufw allow "${FRP_BIND_PORT}/udp" comment 'frp control (kcp)' >/dev/null
-ufw allow "${SFTP_PUBLIC_PORT}/tcp" comment 'SFTP via frp' >/dev/null
+ufw limit "${SFTP_PUBLIC_PORT}/tcp" comment 'SFTP via frp' >/dev/null
 ufw --force enable
-info "ufw 已启用：放行 22 / ${FRP_BIND_PORT}(TCP+UDP) / ${SFTP_PUBLIC_PORT}（管理面板 7500 刻意不对公网开放）"
+info "ufw 已启用：22 与 ${SFTP_PUBLIC_PORT} 为 limit 限速、${FRP_BIND_PORT} TCP+UDP 放行（管理面板 7500 刻意不对公网开放）"
+
+# ---------- 6. 自动安全更新 ----------
+step "6/6 启用自动安全更新（unattended-upgrades）"
+cat > /etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+EOF
+systemctl enable --now unattended-upgrades >/dev/null 2>&1 || true
+info "已启用自动安全更新（仅 Ubuntu 安全源；日志：/var/log/unattended-upgrades/）"
 
 # ---------- 结果摘要 ----------
 if [ "$FRP_TRANSPORT" = "kcp" ]; then

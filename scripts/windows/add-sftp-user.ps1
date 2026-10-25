@@ -88,6 +88,44 @@ function New-RandomPassword {
     -join ($bytes | ForEach-Object { $chars[$_ % $chars.Length] })
 }
 
+# 通过 secedit 给本地组写入"拒绝交互式登录"与"拒绝远程交互式登录"（RDP）权限：
+# 上传账号只能走 SFTP（网络登录），无法在 Windows 登录界面或 RDP 登录。
+# 做法：导出当前策略 -> 在既有 SeDeny* 值上合并本组 SID（保留 Guest 等原条目）-> 回写。
+# 幂等：SID 已存在则不重复添加；只回写这两个权限项，其余策略不受影响。
+# 与 setup-home-windows.ps1 保持同一实现；改这里时请同步那边
+function Grant-SftpGroupNoInteractiveLogon {
+    param([string]$GroupName)
+    $sid    = (Get-LocalGroup -Name $GroupName).SID.Value
+    $export = Join-Path $env:TEMP 'secedit-export.inf'
+    $cfg    = Join-Path $env:TEMP 'secedit-sftp.inf'
+    if ((Invoke-Native 'secedit.exe' @('/export', '/cfg', $export, '/quiet')) -ne 0) {
+        throw 'secedit /export 失败'
+    }
+    $rights = @{}
+    foreach ($right in @('SeDenyInteractiveLogonRight', 'SeDenyRemoteInteractiveLogonRight')) {
+        $line = Get-Content -Path $export | Where-Object { $_ -match "^$right\s*=" } | Select-Object -First 1
+        $values = @()
+        if ($line) { $values = ($line -split '=', 2)[1].Trim() -split '\s*,\s*' | Where-Object { $_ } }
+        if ($values -notcontains "*$sid") { $values += "*$sid" }
+        $rights[$right] = $values -join ','
+    }
+    $nl = "`r`n"
+    $inf = "[Unicode]$nl" +
+        "Unicode=yes$nl" +
+        "[Privilege Rights]$nl" +
+        "SeDenyInteractiveLogonRight = $($rights['SeDenyInteractiveLogonRight'])$nl" +
+        "SeDenyRemoteInteractiveLogonRight = $($rights['SeDenyRemoteInteractiveLogonRight'])$nl" +
+        "[Version]$nl" +
+        'signature="$CHICAGO$"' + $nl +
+        'Revision=1' + $nl
+    [System.IO.File]::WriteAllText($cfg, $inf, (New-Object System.Text.UnicodeEncoding))
+    if ((Invoke-Native 'secedit.exe' @('/configure', '/db',
+        "$env:windir\security\database\secedit.sdb", '/cfg', $cfg, '/quiet')) -ne 0) {
+        throw 'secedit /configure 失败'
+    }
+    Remove-Item -LiteralPath $export, $cfg -Force -ErrorAction SilentlyContinue
+}
+
 # ---------------------------------------------------------------- 0. 前置检查
 $identity  = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identity)
@@ -108,6 +146,7 @@ $envMap = Get-EnvMap -Path $EnvFile
 $VpsIp          = $envMap['VPS_IP']
 $SftpPublicPort = if ($envMap['SFTP_PUBLIC_PORT']) { $envMap['SFTP_PUBLIC_PORT'] } else { '6022' }
 $SftpRoot       = if ($envMap['SFTP_ROOT'])        { $envMap['SFTP_ROOT'] }        else { 'C:\SFTPData' }
+$LockoutRaw     = $envMap['SFTP_LOCKOUT_THRESHOLD']
 if (-not $VpsIp) { Write-Fail ".env 中 VPS_IP 为空，请先填写 VPS 公网 IP" }
 
 $chrootDir = Join-Path $SftpRoot $UserName
@@ -149,6 +188,26 @@ try {
         }
     }
 } catch { }
+
+# 拒绝该组本地/RDP 交互登录（组级，一次配置对全部成员生效）
+try {
+    Grant-SftpGroupNoInteractiveLogon -GroupName $SftpGroup
+    Write-Info "已确认 $SftpGroup 组拒绝本地/RDP 交互登录（只能走 SFTP）"
+} catch {
+    Write-Fail "配置'拒绝本地登录'失败：$($_.Exception.Message)`n请确认 secedit 可用（安全策略数据库未被锁定）后重跑"
+}
+
+# 可选：机器级账户锁定策略（.env 的 SFTP_LOCKOUT_THRESHOLD，非空时启用）
+# 注意：net accounts 是全机设置，会影响包括管理员在内的所有本地账户
+if ($LockoutRaw) {
+    $lockout = [int32]0
+    if (-not [int32]::TryParse($LockoutRaw, [ref]$lockout) -or $lockout -lt 1 -or $lockout -gt 100) {
+        Write-Fail "SFTP_LOCKOUT_THRESHOLD 必须是 1-100 的整数（次），当前：$LockoutRaw"
+    }
+    $null = Invoke-Native 'net.exe' @('accounts', "/lockoutthreshold:$lockout")
+    $null = Invoke-Native 'net.exe' @('accounts', '/lockoutduration:30', '/lockoutwindow:30')
+    Write-Warn2 "已启用机器级账户锁定：连续 $lockout 次失败锁定 30 分钟（影响所有本地账户，含管理员自己）"
+}
 
 # ---------------------------------------------------------------- 2. 目录与 NTFS ACL
 New-Item -ItemType Directory -Force -Path $uploadDir | Out-Null
@@ -203,6 +262,7 @@ $beginMarker
 Match User $UserName
     ChrootDirectory $chrootDir
     ForceCommand internal-sftp -d /upload
+    MaxAuthTries 3
     AllowTcpForwarding no
     AllowAgentForwarding no
     X11Forwarding no
