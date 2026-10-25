@@ -47,8 +47,14 @@ env_get() {
 
 FRP_BIND_PORT="$(env_get FRP_BIND_PORT)";       FRP_BIND_PORT="${FRP_BIND_PORT:-7000}"
 SFTP_PUBLIC_PORT="$(env_get SFTP_PUBLIC_PORT)"; SFTP_PUBLIC_PORT="${SFTP_PUBLIC_PORT:-6022}"
+FRP_TRANSPORT="$(env_get FRP_TRANSPORT)";       FRP_TRANSPORT="${FRP_TRANSPORT:-tcp}"
 VPS_IP="$(env_get VPS_IP)"
 FRP_TOKEN="$(env_get FRP_TOKEN)"
+
+case "$FRP_TRANSPORT" in
+    tcp|kcp) ;;
+    *) fail "FRP_TRANSPORT 仅支持 tcp 或 kcp（当前：$FRP_TRANSPORT）" ;;
+esac
 
 # ---------- 1. 系统依赖 ----------
 step "1/5 安装系统依赖（curl unzip fail2ban ufw openssl）"
@@ -140,6 +146,10 @@ cat > "$FRPS_CONF" <<EOF
 bindAddr = "0.0.0.0"
 bindPort = ${FRP_BIND_PORT}
 
+# KCP（UDP）控制通道端口，与 TCP 同端口号互不冲突。
+# 仅当家里 frpc 配置 transport.protocol = "kcp" 时才会用到
+kcpBindPort = ${FRP_BIND_PORT}
+
 auth.method = "token"
 auth.token = "${FRP_TOKEN}"
 
@@ -200,11 +210,24 @@ info "fail2ban 已启用（SSH 5 次失败封禁 1 小时）"
 
 ufw allow 22/tcp comment 'SSH'                       >/dev/null
 ufw allow "${FRP_BIND_PORT}/tcp" comment 'frp control' >/dev/null
+# UDP 同端口号供 KCP 模式使用；纯 tcp 模式下放行也无害
+ufw allow "${FRP_BIND_PORT}/udp" comment 'frp control (kcp)' >/dev/null
 ufw allow "${SFTP_PUBLIC_PORT}/tcp" comment 'SFTP via frp' >/dev/null
 ufw --force enable
-info "ufw 已启用：放行 22 / ${FRP_BIND_PORT} / ${SFTP_PUBLIC_PORT}（管理面板 7500 刻意不对公网开放）"
+info "ufw 已启用：放行 22 / ${FRP_BIND_PORT}(TCP+UDP) / ${SFTP_PUBLIC_PORT}（管理面板 7500 刻意不对公网开放）"
 
 # ---------- 结果摘要 ----------
+if [ "$FRP_TRANSPORT" = "kcp" ]; then
+    TRANSPORT_LINE="kcp（UDP 传输，家宽/跨境丢包线路吞吐更好）"
+    FIREWALL_LINES="      22                （你自己管理 VPS，TCP）
+      ${FRP_BIND_PORT}            （frp 隧道，TCP 与 UDP 都要放行）
+      ${SFTP_PUBLIC_PORT}            （外网上传者连接 SFTP，TCP）"
+else
+    TRANSPORT_LINE="tcp（默认）"
+    FIREWALL_LINES="      22                （你自己管理 VPS，TCP）
+      ${FRP_BIND_PORT}            （frp 隧道，TCP）
+      ${SFTP_PUBLIC_PORT}            （外网上传者连接 SFTP，TCP）"
+fi
 echo
 echo -e "${CYAN}============================================================${NC}"
 echo -e "${GREEN}  VPS 端 frps 部署完成${NC}"
@@ -217,17 +240,15 @@ if [ "${TOKEN_GENERATED:-0}" -eq 1 ]; then
 fi
 cat <<INFO
 
-  frps 控制通道端口 : ${FRP_BIND_PORT}（frpc 用）
+  frps 控制通道端口 : ${FRP_BIND_PORT}（frpc 用；传输协议：${TRANSPORT_LINE}）
   公网 SFTP 端口    : ${SFTP_PUBLIC_PORT}（外网上传者连接）
   管理面板          : http://127.0.0.1:7500 （用户 ${DASH_USER} / 密码 ${DASH_PASSWORD}）
                       在本机执行: ssh -L 7500:127.0.0.1:7500 root@${VPS_IP:-<VPS_IP>}
   frps 日志         : ${FRPS_LOG}
 
   ${YELLOW}【必做】腾讯云控制台防火墙${NC}（脚本无法代办）：
-    轻量应用服务器控制台 -> 防火墙 -> 添加规则，放行 TCP：
-      22              （你自己管理 VPS）
-      ${FRP_BIND_PORT}            （frp 隧道）
-      ${SFTP_PUBLIC_PORT}            （外网上传者连接 SFTP）
+    轻量应用服务器控制台 -> 防火墙 -> 添加规则，放行：
+${FIREWALL_LINES}
 
   下一步：
     1. 回填 FRP_TOKEN 到 .env（若上面有提示）

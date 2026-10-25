@@ -165,6 +165,7 @@ $uploadTemplate = @'
 #   .\upload.ps1 -Path C:\data\report.pdf
 #   .\upload.ps1 -Path C:\data\photos            （目录整体上传）
 # 提示：首次连接会提示接受主机指纹，输入 y 回车即可（只此一次）
+# 弱网断线可直接重跑同一命令，已启用断点续传（-resume）
 param(
     [Parameter(Mandatory = $true)][string]$Path,
     [string]$RemoteDir = '/upload'
@@ -178,7 +179,7 @@ $WinscpCom = '__WINSCP_COM__'
 $item = Get-Item -LiteralPath $Path
 if (-not $item) { Write-Host "本地路径不存在：$Path" -ForegroundColor Red; exit 1 }
 
-$putCmd = if ($item.PSIsContainer) { 'put -r' } else { 'put' }
+$putCmd = if ($item.PSIsContainer) { 'put -r -resume' } else { 'put -resume' }
 Write-Host "上传 $($item.FullName) -> $RemoteDir ..."
 & $WinscpCom /command `
     "open sftp://$($User):$EncPass@$($SftpHost):$Port/ -timeout=15" `

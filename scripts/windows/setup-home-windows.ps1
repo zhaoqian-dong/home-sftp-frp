@@ -5,10 +5,12 @@
 .DESCRIPTION
     步骤：
       1. 安装/启用 Windows 内置 OpenSSH Server（sshd，提供 SFTP 服务）
-      2. 收紧 sshd 防火墙规则为仅限局域网（公网访问一律走 frp 隧道）
-      3. 创建 SFTP 数据根目录 + sftpusers 用户组，并做 NTFS ACL 加固
-      4. 安装 frpc 到 C:\Program Files\frp 并生成 frpc.toml
-      5. 用 WinSW 把 frpc 注册为 Windows 服务（开机自启、崩溃自动重启）
+         并收紧 sshd 防火墙规则为仅限局域网（公网访问一律走 frp 隧道）
+      2. 创建 SFTP 数据根目录 + sftpusers 用户组，并做 NTFS ACL 加固
+      3. 安装 frpc 到 C:\Program Files\frp 并生成 frpc.toml
+      4. 用 WinSW 把 frpc 注册为 Windows 服务（开机自启、崩溃自动重启）
+      5. 电源设置（接通电源时永不睡眠）+ 系统更新使用时段提醒
+      6. 状态检查与摘要
 
     运行要求：管理员 PowerShell；本脚本与 .env 放在同一目录。
     家里路由器无需任何端口映射（frpc 只发起出站连接）。
@@ -31,7 +33,7 @@ $SftpGroup    = 'sftpusers'
 # ---------------------------------------------------------------- 通用工具
 function Write-Info  { param($m) Write-Host "[INFO] $m" -ForegroundColor Green }
 function Write-Warn2 { param($m) Write-Host "[WARN] $m" -ForegroundColor Yellow }
-function Write-Step  { param($n, $m) Write-Host "`n==> [$n/5] $m" -ForegroundColor Cyan }
+function Write-Step  { param($n, $m) Write-Host "`n==> [$n/6] $m" -ForegroundColor Cyan }
 function Write-Fail  { param($m) Write-Host "[ERROR] $m" -ForegroundColor Red; exit 1 }
 
 # 运行原生命令并返回退出码。
@@ -104,9 +106,14 @@ $FrpBindPort    = if ($envMap['FRP_BIND_PORT'])    { $envMap['FRP_BIND_PORT'] } 
 $SftpPublicPort = if ($envMap['SFTP_PUBLIC_PORT']) { $envMap['SFTP_PUBLIC_PORT'] } else { '6022' }
 $FrpToken       = $envMap['FRP_TOKEN']
 $SftpRoot       = if ($envMap['SFTP_ROOT'])        { $envMap['SFTP_ROOT'] }        else { 'C:\SFTPData' }
+$FrpTransport   = if ($envMap['FRP_TRANSPORT'])    { $envMap['FRP_TRANSPORT'] }    else { 'tcp' }
+$BandwidthLimit = $envMap['SFTP_BANDWIDTH_LIMIT']
 
 if (-not $VpsIp)    { Write-Fail ".env 中 VPS_IP 为空，请先填写 VPS 公网 IP" }
 if (-not $FrpToken) { Write-Fail ".env 中 FRP_TOKEN 为空，请先在 VPS 上运行 setup-vps.sh，把生成的 token 回填进 .env" }
+if ($FrpTransport -notin @('tcp', 'kcp')) {
+    Write-Fail ".env 中 FRP_TRANSPORT 仅支持 tcp 或 kcp（当前：$FrpTransport）"
+}
 
 # ---------------------------------------------------------------- 1. OpenSSH Server
 Write-Step 1 "安装/启用 OpenSSH Server（SFTP 服务端）"
@@ -217,6 +224,9 @@ if (-not $skipFrp) {
 # 生成 frpc.toml（旧配置备份为 .bak）
 $frpcTomlPath = Join-Path $FrpDir 'frpc.toml'
 if (Test-Path $frpcTomlPath) { Copy-Item -Force $frpcTomlPath "$frpcTomlPath.bak" }
+# 带宽限制行：设置了 SFTP_BANDWIDTH_LIMIT 才写入，否则留注释占位
+$bwLine = if ($BandwidthLimit) { "transport.bandwidthLimit = `"$BandwidthLimit`"" }
+          else { "# 未设置 SFTP_BANDWIDTH_LIMIT，不限速" }
 $frpcToml = @"
 # 由 setup-home-windows.ps1 于 $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') 自动生成
 
@@ -228,19 +238,32 @@ auth.token = "$FrpToken"
 
 transport.tls.enable = true
 
+# 隧道传输协议：tcp / kcp（KCP 走 UDP，需 VPS 侧 ufw 与云防火墙放行 UDP 同端口）
+transport.protocol = "$FrpTransport"
+
+# 登录失败不退出：VPS 重启或短暂宕机时在进程内持续重连，
+# 不依赖 WinSW 的失败计数（其重试间隔最长要等 1 小时）
+loginFailExit = false
+
 transport.heartbeatInterval = 30
 transport.heartbeatTimeout = 90
 
+# 日志（TOML 单引号字符串，Windows 路径无需转义）。
+# 注意必须写在 [[proxies]] 之前：TOML 中 [[proxies]] 之后的键值
+# 都会归属到最后一个 proxy，写在其后会导致 frpc 报 unknown field "log"
+log.to = '$FrpDir\frpc.log'
+log.level = 'info'
+log.maxDays = 7
+
+# 把本机 sshd(22) 的 SFTP 服务映射到 VPS 的 remotePort 端口
 [[proxies]]
 name = "sftp"
 type = "tcp"
 localIP = "127.0.0.1"
 localPort = 22
 remotePort = $SftpPublicPort
-
-log.to = '$FrpDir\frpc.log'
-log.level = 'info'
-log.maxDays = 7
+# 单连接带宽上限（.env 的 SFTP_BANDWIDTH_LIMIT，如 5MB）
+$bwLine
 "@
 Write-FileNoBom -Path $frpcTomlPath -Content $frpcToml
 Write-Info "已生成 $frpcTomlPath"
@@ -292,8 +315,22 @@ Start-Service frpc
 Start-Sleep -Seconds 3
 Write-Info "frpc 服务已启动（开机自启，崩溃 10 秒后自动重启）"
 
-# ---------------------------------------------------------------- 5. 状态检查与摘要
-Write-Step 5 "状态检查"
+# ---------------------------------------------------------------- 5. 电源与系统更新
+Write-Step 5 "电源与系统更新（防服务静默中断）"
+
+# 接通电源时禁止自动睡眠/休眠：睡眠会让 SFTP 与 frpc 一并失联，
+# 是家庭端"莫名不通"的常见根因（仅关闭显示器不影响）
+Invoke-Native 'powercfg.exe' @('/change', 'standby-timeout-ac', '0') | Out-Null
+Invoke-Native 'powercfg.exe' @('/change', 'hibernate-timeout-ac', '0') | Out-Null
+Write-Info "已设置：接通电源时永不睡眠/休眠"
+
+if (Get-CimInstance -ClassName Win32_Battery -ErrorAction SilentlyContinue) {
+    Write-Warn2 "本机带电池（笔记本）：以上仅调整'接通电源'策略，用电池时合盖/低电仍会睡眠，建议插电使用"
+}
+Write-Warn2 "建议在 设置 -> Windows 更新 -> 高级选项 -> 使用时段 设定活跃时段，避免自动重启打断大文件传输"
+
+# ---------------------------------------------------------------- 6. 状态检查与摘要
+Write-Step 6 "状态检查"
 Get-Service sshd, frpc | Format-Table Name, Status, StartType -AutoSize
 
 Write-Info "frpc 日志最后 5 行（应出现 login to server success）："

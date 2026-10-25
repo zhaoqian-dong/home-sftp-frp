@@ -10,6 +10,11 @@
 bindAddr = "0.0.0.0"
 bindPort = 7000
 
+# KCP（UDP）控制通道端口，与 TCP 同端口号互不冲突。
+# 仅当 frpc 设置 transport.protocol = "kcp"（.env 的 FRP_TRANSPORT）时使用；
+# 云防火墙需额外放行 UDP 同端口
+kcpBindPort = 7000
+
 # 令牌认证：frpc 必须携带相同 token 才能连接
 auth.method = "token"
 auth.token = "__FRP_TOKEN__"

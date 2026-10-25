@@ -71,9 +71,10 @@ if (-not $winscpCom) {
 if (-not $winscpCom) { Write-Fail "未找到 WinSCP，请先运行 setup-client.ps1 或从 https://winscp.net 安装" }
 
 # ---------------------------------------------------------------- 上传
+# -resume：断点续传，弱网中断后重跑同一命令可从上次进度继续
 $encUser = [uri]::EscapeDataString($UserName)
 $encPass = [uri]::EscapeDataString($Password)
-$putCmd  = if ($item.PSIsContainer) { 'put -r' } else { 'put' }
+$putCmd  = if ($item.PSIsContainer) { 'put -r -resume' } else { 'put -resume' }
 
 Write-Host "上传 $($item.FullName) -> $RemoteDir （$VpsIp`:$Port）"
 Write-Host "提示：首次连接会提示接受主机指纹，输入 y 回车即可（只此一次）"

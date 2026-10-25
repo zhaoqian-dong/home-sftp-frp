@@ -19,9 +19,25 @@ auth.token = "__FRP_TOKEN__"
 # 客户端启用 TLS（配合服务端 transport.tls.force = true）
 transport.tls.enable = true
 
+# 隧道传输协议：tcp（默认）或 kcp。
+# KCP 基于 UDP，丢包高的家宽/跨境线路吞吐更好；切换需 .env 的 FRP_TRANSPORT=kcp，
+# 且 VPS 云防火墙需额外放行 UDP 控制端口（与 TCP 同端口号）
+transport.protocol = "tcp"
+
+# 登录失败不退出：VPS 重启或短暂宕机时在进程内持续重连，
+# 不依赖 WinSW 的失败计数（其重试间隔最长要等 1 小时）
+loginFailExit = false
+
 # 心跳保活与断线自动重连（frp 默认即启用，这里显式声明便于排查）
 transport.heartbeatInterval = 30
 transport.heartbeatTimeout = 90
+
+# 日志（TOML 单引号字符串，Windows 路径无需转义）。
+# 注意必须写在 [[proxies]] 之前：TOML 中 [[proxies]] 之后的键值
+# 都会归属到最后一个 proxy，写在其后会导致 frpc 报 unknown field "log"
+log.to = 'C:\Program Files\frp\frpc.log'
+log.level = 'info'
+log.maxDays = 7
 
 # 把本机 sshd(22) 的 SFTP 服务映射到 VPS 的 remotePort 端口
 [[proxies]]
@@ -30,8 +46,5 @@ type = "tcp"
 localIP = "127.0.0.1"
 localPort = 22
 remotePort = 6022
-
-# 日志（TOML 单引号字符串，Windows 路径无需转义）
-log.to = 'C:\Program Files\frp\frpc.log'
-log.level = 'info'
-log.maxDays = 7
+# 单连接带宽上限（可选，对应 .env 的 SFTP_BANDWIDTH_LIMIT，留空则不加此行）
+# transport.bandwidthLimit = "5MB"

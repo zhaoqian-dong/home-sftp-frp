@@ -36,8 +36,9 @@
 - 🔒 **chroot 严格隔离** —— 每账号一个 `ChrootDirectory` + NTFS ACL 断继承，账号间互不可见
 - 🙈 **家庭网络零暴露** —— frpc 只发起出站连接，家里不开任何入站端口，上传者只见 VPS IP
 - 🔐 **多层加密认证** —— frp 强制 TLS + 随机 token；SFTP 走标准 SSH 加密
-- 🩹 **断线自愈** —— frp 心跳自动重连 + Windows 服务崩溃自动重启 + 开机自启，断电恢复即恢复服务
+- 🩹 **断线自愈** —— frp 心跳自动重连 + 进程内断线重登 + Windows 服务崩溃自动重启 + 开机自启，断电恢复即恢复服务
 - ⚡ **双端一键部署** —— VPS 端一条 Bash、家庭端一条 PowerShell，全部幂等可重跑
+- 🚄 **可选 KCP 隧道** —— 丢包高的家宽/跨境线路一键切换 UDP 传输（`.env` 里 `FRP_TRANSPORT=kcp`）
 - 🛡 **纵深防御** —— fail2ban 防爆破、ufw 防火墙、管理面板仅回环、上传账号禁 shell/转发/TTY
 - 🇨🇳 **国内网络友好** —— GitHub 下载失败自动回退国内加速镜像，腾讯云轻量服务器全程适配
 - 📦 **双形态客户端** —— WinSCP 图形界面 + 命令行上传脚本，给非技术用户也能用
@@ -100,6 +101,12 @@ cp .env.example .env
 
 先只填 `VPS_IP=`（租完服务器就有），其余项在对应步骤补齐。
 **同一份 `.env` 之后会同时放到 VPS 和家庭 Windows 上，是唯一的配置来源。**
+
+可选进阶（不配置也能正常用）：
+
+- `FRP_TRANSPORT=kcp`：隧道改走 UDP，丢包高的家宽/跨境线路吞吐更好
+  （切换后需在 VPS 云防火墙额外放行 **UDP** 控制端口）；
+- `SFTP_BANDWIDTH_LIMIT=5MB`：限制单个上传者的带宽，防止占满 VPS/家庭上行。
 
 ### 第 1 步 · 租一台 VPS
 
@@ -166,6 +173,8 @@ powershell -ExecutionPolicy Bypass -File .\setup-client.ps1
 # VPS 上：frps 在监听
 ss -tlnp | grep -E ':(7000|6022)'
 systemctl status frps --no-pager
+# 若启用了 kcp（FRP_TRANSPORT=kcp）：UDP 7000 也应在监听
+ss -ulnp | grep 7000
 ```
 
 ```powershell
@@ -212,6 +221,9 @@ Get-Service frpc, sshd
 
 **已知限制（如实说明）：**
 
+- 家庭电脑睡眠会中断服务：脚本已设置**接通电源时永不睡眠/休眠**；
+  笔记本用电池供电时仍按原策略（合盖/低电会睡），建议插电使用；
+  另建议设置 Windows 更新"使用时段"，避免自动重启打断传输；
 - Windows OpenSSH 的 `ChrootDirectory` 不做 Linux 式属主强校验，隔离实际由 NTFS ACL 保证
   （脚本已按最佳实践配置；要求 Win10 1809+ 内置 OpenSSH ≥ 7.7）；
 - `setup-client.ps1` 生成的桌面工具内含明文密码（个人机便利性取舍），请勿转发，
@@ -224,7 +236,8 @@ Get-Service frpc, sshd
 |---|---|
 | 上传者连接超时 | 九成是**腾讯云控制台防火墙没放行 6022/7000**；其次检查 `.env` 端口与脚本输出一致 |
 | frpc 日志报 auth failed | 两端 `FRP_TOKEN` 不一致：确认 `.env` 已回填并重跑两端脚本（或手动同步 frps.toml/frpc.toml 后重启服务） |
-| frpc 日志报 connect server timeout | VPS 侧 7000 未放行，或 VPS 宕机/过期 |
+| frpc 日志报 connect server timeout | VPS 侧 7000 未放行，或 VPS 宕机/过期；kcp 模式下 **UDP** 7000 与 TCP 是两条规则，都要放行 |
+| VPS 恢复后家里迟迟没重连 | 旧配置的 frpc 登录失败即退出、WinSW 最长 1 小时才重试：重跑 `setup-home-windows.ps1` 升级配置（现含 `loginFailExit = false`，进程内自动重连） |
 | frpc 连上但 SFTP 登录失败 | 家庭 sshd 没起来：`Get-Service sshd`；或账号密码错：重跑 `add-sftp-user.ps1` 重置 |
 | 能登录但看不到 upload | `C:\SFTPData\<用户名>\upload` 被手动改动：重跑 `add-sftp-user.ps1` 修复 |
 | 传输速度只有几百 KB/s | 正常：受 VPS 带宽限制（见[租赁指南](docs/vps-rental-guide.md)第五节），可升级带宽 |
