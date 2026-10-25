@@ -164,6 +164,31 @@ $rootArgs = @($SftpRoot, '/inheritance:r', '/grant:r',
 Invoke-Native 'icacls.exe' $rootArgs | Out-Null
 Write-Info "数据目录已就绪并完成 ACL 加固：$chrootDir"
 
+# ---------------------------------------------------------------- 2b. 可选 NTFS 硬配额
+# .env 的 SFTP_USER_QUOTA_GB（GB）非空时，对该账号设置硬配额，防止塞满磁盘。
+# 配额按"该用户在整卷写入量"计，上传账号只会写自己的 upload 目录，等效于限制其数据量
+$quotaRaw = $envMap['SFTP_USER_QUOTA_GB']
+if ($quotaRaw) {
+    if ($SftpRoot -notmatch '^([A-Za-z]):\\') {
+        Write-Fail "SFTP_USER_QUOTA_GB 要求 SFTP_ROOT 为本地盘路径（当前：$SftpRoot）"
+    }
+    $quotaGb = [int64]0
+    if (-not [int64]::TryParse($quotaRaw, [ref]$quotaGb) -or $quotaGb -le 0) {
+        Write-Fail "SFTP_USER_QUOTA_GB 必须是正整数（GB），当前：$quotaRaw"
+    }
+    $vol = "$($Matches[1]):"
+    $limitBytes = $quotaGb * 1GB
+    $thresholdBytes = [int64]($limitBytes * 0.9)
+    # 启用卷配额强制：未单独设置配额的账户（含管理员本人）不受影响（默认无上限）
+    if ((Invoke-Native 'fsutil.exe' @('quota', 'enforce', $vol)) -ne 0) {
+        Write-Fail "fsutil quota enforce $vol 失败（需管理员权限且卷为 NTFS）"
+    }
+    if ((Invoke-Native 'fsutil.exe' @('quota', 'modify', $vol, "$thresholdBytes", "$limitBytes", $UserName)) -ne 0) {
+        Write-Fail "为 $UserName 设置 ${quotaGb}GB 配额失败"
+    }
+    Write-Info "已为 $UserName 设置 NTFS 硬配额：${quotaGb}GB（用量到 90% 时告警）"
+}
+
 # ---------------------------------------------------------------- 3. sshd 配置（原子更新）
 $beginMarker = "# >>> sftp-user:$UserName (managed by add-sftp-user.ps1) >>>"
 $endMarker   = "# <<< sftp-user:$UserName <<<"

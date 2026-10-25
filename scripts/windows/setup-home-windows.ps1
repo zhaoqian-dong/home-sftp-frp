@@ -10,7 +10,8 @@
       3. 安装 frpc 到 C:\Program Files\frp 并生成 frpc.toml
       4. 用 WinSW 把 frpc 注册为 Windows 服务（开机自启、崩溃自动重启）
       5. 电源设置（接通电源时永不睡眠）+ 系统更新使用时段提醒
-      6. 状态检查与摘要
+      6. 可选定时任务：上传保留期清理 / 新文件 webhook 通知（按 .env 配置）
+      7. 状态检查与摘要
 
     运行要求：管理员 PowerShell；本脚本与 .env 放在同一目录。
     家里路由器无需任何端口映射（frpc 只发起出站连接）。
@@ -24,7 +25,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$FrpVersion   = '0.71.1'   # frp 版本，升级时只改这里
+$FrpVersion   = '0.71.1'   # 默认 frp 版本（可被 .env 的 FRP_VERSION 覆盖）
 $WinSwVersion = '2.12.0'   # WinSW（Windows 服务包装器）版本
 $FrpDir       = 'C:\Program Files\frp'
 $SshdConfig   = "$env:ProgramData\ssh\sshd_config"
@@ -33,7 +34,7 @@ $SftpGroup    = 'sftpusers'
 # ---------------------------------------------------------------- 通用工具
 function Write-Info  { param($m) Write-Host "[INFO] $m" -ForegroundColor Green }
 function Write-Warn2 { param($m) Write-Host "[WARN] $m" -ForegroundColor Yellow }
-function Write-Step  { param($n, $m) Write-Host "`n==> [$n/6] $m" -ForegroundColor Cyan }
+function Write-Step  { param($n, $m) Write-Host "`n==> [$n/7] $m" -ForegroundColor Cyan }
 function Write-Fail  { param($m) Write-Host "[ERROR] $m" -ForegroundColor Red; exit 1 }
 
 # 运行原生命令并返回退出码。
@@ -107,7 +108,10 @@ $SftpPublicPort = if ($envMap['SFTP_PUBLIC_PORT']) { $envMap['SFTP_PUBLIC_PORT']
 $FrpToken       = $envMap['FRP_TOKEN']
 $SftpRoot       = if ($envMap['SFTP_ROOT'])        { $envMap['SFTP_ROOT'] }        else { 'C:\SFTPData' }
 $FrpTransport   = if ($envMap['FRP_TRANSPORT'])    { $envMap['FRP_TRANSPORT'] }    else { 'tcp' }
+$FrpVersion     = if ($envMap['FRP_VERSION'])      { $envMap['FRP_VERSION'] }      else { $FrpVersion }
 $BandwidthLimit = $envMap['SFTP_BANDWIDTH_LIMIT']
+$RetentionRaw   = $envMap['SFTP_RETENTION_DAYS']
+$WebhookUrl     = $envMap['UPLOAD_NOTIFY_WEBHOOK']
 
 if (-not $VpsIp)    { Write-Fail ".env 中 VPS_IP 为空，请先填写 VPS 公网 IP" }
 if (-not $FrpToken) { Write-Fail ".env 中 FRP_TOKEN 为空，请先在 VPS 上运行 setup-vps.sh，把生成的 token 回填进 .env" }
@@ -329,8 +333,73 @@ if (Get-CimInstance -ClassName Win32_Battery -ErrorAction SilentlyContinue) {
 }
 Write-Warn2 "建议在 设置 -> Windows 更新 -> 高级选项 -> 使用时段 设定活跃时段，避免自动重启打断大文件传输"
 
-# ---------------------------------------------------------------- 6. 状态检查与摘要
-Write-Step 6 "状态检查"
+# ---------------------------------------------------------------- 6. 可选定时任务
+Write-Step 6 "可选定时任务（保留期清理 / 上传通知，按 .env 配置）"
+
+$taskDir     = 'C:\ProgramData\home-sftp-frp'
+$cleanupTask = 'home-sftp-frp-cleanup'
+$notifyTask  = 'home-sftp-frp-notify'
+
+# 生成的任务脚本带 BOM 写出：任务以系统默认 PowerShell 运行，无 BOM 时中文注释会乱码
+function Install-TaskScript {
+    param([string]$Template, [hashtable]$Values, [string]$Dest)
+    $tpl = Join-Path $PSScriptRoot $Template
+    if (-not (Test-Path $tpl)) {
+        Write-Fail "未找到模板 $Template（请把整个 windows/ 目录连同 .env 一起复制）"
+    }
+    $body = Get-Content -Raw -Encoding UTF8 $tpl
+    foreach ($k in $Values.Keys) { $body = $body.Replace($k, $Values[$k]) }
+    New-Item -ItemType Directory -Force -Path $taskDir | Out-Null
+    # 任务目录收紧为 SYSTEM/管理员（脚本内含 webhook 地址等敏感值）
+    $null = Invoke-Native 'icacls.exe' @($taskDir, '/inheritance:r', '/grant:r',
+        '*S-1-5-18:F', '*S-1-5-32-544:F')
+    [System.IO.File]::WriteAllText($Dest, $body, (New-Object System.Text.UTF8Encoding($true)))
+}
+
+# 6.1 保留期清理
+$retentionDays = [int32]0
+if ($RetentionRaw) {
+    if (-not [int32]::TryParse($RetentionRaw, [ref]$retentionDays) -or $retentionDays -le 0) {
+        Write-Fail "SFTP_RETENTION_DAYS 必须是正整数（天），当前：$RetentionRaw"
+    }
+}
+if ($retentionDays -gt 0) {
+    $dest = Join-Path $taskDir 'cleanup-uploads.ps1'
+    Install-TaskScript -Template 'cleanup-uploads.ps1' `
+        -Values @{ '__SFTP_ROOT__' = $SftpRoot; '__RETENTION_DAYS__' = "$retentionDays" } -Dest $dest
+    $action  = New-ScheduledTaskAction -Execute 'powershell.exe' `
+        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$dest`""
+    $trigger = New-ScheduledTaskTrigger -Daily -At 03:30
+    Register-ScheduledTask -TaskName $cleanupTask -Action $action -Trigger $trigger `
+        -User 'SYSTEM' -RunLevel Highest -Force | Out-Null
+    Write-Info "已注册每天 03:30 清理任务：删除 $SftpRoot 下超过 $retentionDays 天的文件"
+} elseif (Get-ScheduledTask -TaskName $cleanupTask -ErrorAction SilentlyContinue) {
+    Unregister-ScheduledTask -TaskName $cleanupTask -Confirm:$false
+    Write-Info "SFTP_RETENTION_DAYS 未配置，已移除旧清理任务"
+}
+
+# 6.2 上传通知
+if ($WebhookUrl) {
+    $dest = Join-Path $taskDir 'notify-upload.ps1'
+    Install-TaskScript -Template 'notify-upload.ps1' `
+        -Values @{ '__SFTP_ROOT__' = $SftpRoot; '__WEBHOOK_URL__' = $WebhookUrl } -Dest $dest
+    $action  = New-ScheduledTaskAction -Execute 'powershell.exe' `
+        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$dest`""
+    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) `
+        -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
+    Register-ScheduledTask -TaskName $notifyTask -Action $action -Trigger $trigger `
+        -User 'SYSTEM' -RunLevel Highest -Force | Out-Null
+    Write-Info "已注册每 5 分钟上传通知任务（新文件到达 POST webhook）"
+} elseif (Get-ScheduledTask -TaskName $notifyTask -ErrorAction SilentlyContinue) {
+    Unregister-ScheduledTask -TaskName $notifyTask -Confirm:$false
+    Write-Info "UPLOAD_NOTIFY_WEBHOOK 未配置，已移除旧通知任务"
+}
+if ($retentionDays -le 0 -and -not $WebhookUrl) {
+    Write-Info "未配置 SFTP_RETENTION_DAYS / UPLOAD_NOTIFY_WEBHOOK，跳过定时任务"
+}
+
+# ---------------------------------------------------------------- 7. 状态检查与摘要
+Write-Step 7 "状态检查"
 Get-Service sshd, frpc | Format-Table Name, Status, StartType -AutoSize
 
 Write-Info "frpc 日志最后 5 行（应出现 login to server success）："
@@ -349,6 +418,8 @@ Write-Host @"
   SFTP 数据根目录 : $SftpRoot
   frpc 配置/日志  : $FrpDir\frpc.toml  $FrpDir\frpc.log
   frpc 服务管理   : Get-Service frpc / Restart-Service frpc
+  可选定时任务    : .env 配置 SFTP_USER_QUOTA_GB / SFTP_RETENTION_DAYS /
+                    UPLOAD_NOTIFY_WEBHOOK 后重跑本脚本生效
 
   下一步（创建上传账号，可重复执行）：
       powershell -ExecutionPolicy Bypass -File .\add-sftp-user.ps1 -UserName zhangsan

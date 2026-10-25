@@ -66,10 +66,10 @@
 
 1. 控制台实例右侧点 **登录**（网页终端 OrcaTerm，免配 SSH 客户端），
    或在你自己的电脑上：`ssh root@<公网IP>`；
-2. 把项目的 `scripts/setup-vps.sh` 和填好的 `.env` 上传到 VPS（在你本地电脑执行）：
+2. 把项目的 `scripts/setup-vps.sh`、`scripts/check-vps.sh` 和填好的 `.env` 上传到 VPS（在你本地电脑执行）：
 
    ```bash
-   scp scripts/setup-vps.sh .env root@<公网IP>:/root/
+   scp scripts/setup-vps.sh scripts/check-vps.sh .env root@<公网IP>:/root/
    ```
 
 3. 在 VPS 上执行：
@@ -79,7 +79,11 @@
    bash setup-vps.sh
    ```
 
-4. 按脚本结尾提示：**把生成的 FRP_TOKEN 回填到本地 .env**，
+4. 部署自检：`bash check-vps.sh` —— 全部 PASS 即服务端就绪（WARN 按提示处理；
+   全过但家里连不上时，优先查腾讯云控制台防火墙）。
+   以后排查问题也可以随时重跑它；卸载则用 `scripts/uninstall-vps.sh`。
+
+5. 按脚本结尾提示：**把生成的 FRP_TOKEN 回填到本地 .env**，
    再把 `.env` 和 `scripts/windows/` 目录复制到家里 Windows 机器（U 盘、局域网共享均可）。
 
 ## 五、带宽与流量须知

@@ -18,7 +18,6 @@
 # ============================================================================
 set -euo pipefail
 
-FRP_VERSION="0.71.1"          # frp 版本，升级时只改这里
 FRP_BIN="/usr/local/bin/frps"
 FRP_ETC="/etc/frp"
 FRPS_CONF="${FRP_ETC}/frps.toml"
@@ -35,8 +34,12 @@ fail()  { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || fail "请用 root 运行：sudo bash $0"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="${SCRIPT_DIR}/.env"
-[[ -f "$ENV_FILE" ]] || fail "未找到 .env（请与脚本放在同一目录）"
+# 兼容两种部署布局：与 .env 同目录（scp 平铺）或仓库布局（.env 在 scripts/ 上级）
+ENV_FILE=""
+for cand in "${SCRIPT_DIR}/.env" "${SCRIPT_DIR}/../.env"; do
+    if [ -f "$cand" ]; then ENV_FILE="$cand"; break; fi
+done
+[ -f "$ENV_FILE" ] || fail "未找到 .env（请与脚本放在同一目录，或放在 scripts/ 上级）"
 
 # 从 .env 读取指定 key（不 source，避免 Windows 路径反斜杠等问题）；
 # 末尾 || true 保证 key 不存在时（grep 非零）不会触发 set -e 中断脚本
@@ -45,6 +48,7 @@ env_get() {
         | tr -d '\r' | sed 's/^"//;s/"$//' || true
 }
 
+FRP_VERSION="$(env_get FRP_VERSION)";           FRP_VERSION="${FRP_VERSION:-0.71.1}"
 FRP_BIND_PORT="$(env_get FRP_BIND_PORT)";       FRP_BIND_PORT="${FRP_BIND_PORT:-7000}"
 SFTP_PUBLIC_PORT="$(env_get SFTP_PUBLIC_PORT)"; SFTP_PUBLIC_PORT="${SFTP_PUBLIC_PORT:-6022}"
 FRP_TRANSPORT="$(env_get FRP_TRANSPORT)";       FRP_TRANSPORT="${FRP_TRANSPORT:-tcp}"
