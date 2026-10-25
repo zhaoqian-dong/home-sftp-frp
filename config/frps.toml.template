@@ -1,0 +1,32 @@
+# ============================================================================
+# frps 服务端配置模板（公网 VPS，Ubuntu）
+#
+# 注意：本文件仅作参考展示。实际部署时由 scripts/setup-vps.sh 内嵌模板
+#       生成到 /etc/frp/frps.toml（占位符 __XXX__ 会被替换为 .env 中的值）
+# 参考文档：https://gofrp.org/docs/
+# ============================================================================
+
+# 监听所有网卡的 frp 控制通道端口（frpc 主动连出，方向：家里 -> VPS）
+bindAddr = "0.0.0.0"
+bindPort = 7000
+
+# 令牌认证：frpc 必须携带相同 token 才能连接
+auth.method = "token"
+auth.token = "__FRP_TOKEN__"
+
+# 强制所有 frpc 连接使用 TLS 加密（防止隧道被探测/劫持）
+transport.tls.force = true
+
+# 管理面板仅监听本机回环地址，不暴露公网。
+# 在 VPS 上通过 SSH 隧道访问：
+#   ssh -L 7500:127.0.0.1:7500 root@__VPS_IP__
+# 然后本机浏览器打开 http://127.0.0.1:7500
+webServer.addr = "127.0.0.1"
+webServer.port = 7500
+webServer.user = "__DASH_USER__"
+webServer.password = "__DASH_PASSWORD__"
+
+# 日志
+log.to = "/var/log/frps.log"
+log.level = "info"
+log.maxDays = 7

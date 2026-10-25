@@ -1,0 +1,13 @@
+# 敏感配置：包含 VPS IP 与 frp token，绝不提交
+.env
+.env.*
+!.env.example
+
+# 运行/部署产生的备份与临时文件
+*.bak
+*.bak.*
+sshd_config.candidate
+
+# 系统杂项
+.DS_Store
+Thumbs.db

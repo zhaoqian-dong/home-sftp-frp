@@ -1,0 +1,37 @@
+# ============================================================================
+# frpc 客户端配置模板（家里 Windows 机器）
+#
+# 注意：本文件仅作参考展示。实际部署时由
+#       scripts/windows/setup-home-windows.ps1 内嵌模板生成到
+#       C:\Program Files\frp\frpc.toml（占位符 __XXX__ 会被替换）
+#
+# 数据链路：外网上传者 -> VPS:SFTP_PUBLIC_PORT -> (frp 隧道) -> 本机 127.0.0.1:22
+# ============================================================================
+
+# 公网 VPS 地址与 frp 控制通道端口
+serverAddr = "__VPS_IP__"
+serverPort = 7000
+
+# 令牌认证（必须与 VPS 端 frps.toml 的 auth.token 一致）
+auth.method = "token"
+auth.token = "__FRP_TOKEN__"
+
+# 客户端启用 TLS（配合服务端 transport.tls.force = true）
+transport.tls.enable = true
+
+# 心跳保活与断线自动重连（frp 默认即启用，这里显式声明便于排查）
+transport.heartbeatInterval = 30
+transport.heartbeatTimeout = 90
+
+# 把本机 sshd(22) 的 SFTP 服务映射到 VPS 的 remotePort 端口
+[[proxies]]
+name = "sftp"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 22
+remotePort = 6022
+
+# 日志（TOML 单引号字符串，Windows 路径无需转义）
+log.to = 'C:\Program Files\frp\frpc.log'
+log.level = 'info'
+log.maxDays = 7
