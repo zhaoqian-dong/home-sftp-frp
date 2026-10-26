@@ -10,7 +10,8 @@
          - upload.ps1          命令行上传：.\upload.ps1 -Path C:\data\xxx.zip
          - 上传者连接说明.txt   可直接发给对方的一页说明
     3. 账号密码默认取 .env 中的 SFTP_USER（先用 add-sftp-user.ps1 创建），
-       也可用参数覆盖；密码以 URL 编码形式嵌入生成的文件
+       也可用参数覆盖；密码优先写入 WinSCP 加密存储站点 Home-SFTP（仅当前
+       Windows 用户可解密，桌面工具内不落明文），失败时回退为 URL 内嵌
 
     运行要求：管理员 PowerShell（WinSCP 为机器级安装）；与 .env 放同一目录。
 
@@ -150,6 +151,32 @@ if (-not $winscpCom) { Write-Fail "WinSCP 安装失败，请手动安装后重�
 $winscpExe = $winscpCom -replace '\.com$', '.exe'
 Write-Info "WinSCP 已就绪：$winscpExe"
 
+# ---------------------------------------------------------------- 1b. 创建加密存储站点
+# 优先方案：把站点写进 WinSCP 的会话存储（注册表），密码用 WinSCP 自身的加密
+# 函数（WinSCPnet.dll 的 EncryptPassword，与 GUI 保存密码同一机制，仅当前
+# Windows 用户可解密）——桌面工具里不再出现明文密码。
+# 失败则回退为旧的 URL 内嵌方案（明文，生成文件内自带警告）。
+$siteCreated = $false
+try {
+    $netDll = Join-Path (Split-Path $winscpExe) 'WinSCPnet.dll'
+    if (-not (Test-Path $netDll)) { throw "未找到 $netDll" }
+    Add-Type -Path $netDll
+    $mi = [WinSCP.SessionOptions].GetMethod('EncryptPassword',
+        [System.Reflection.BindingFlags]'NonPublic,Static')
+    if (-not $mi) { throw 'WinSCPnet 未暴露 EncryptPassword（版本变化），无法安全存储' }
+    $encPass = $mi.Invoke($null, @($SftpPassword))
+    $sessKey = 'HKCU:\Software\Martin Prikryl\WinSCP 2\Sessions\Home-SFTP'
+    New-Item -Path $sessKey -Force | Out-Null
+    Set-ItemProperty -Path $sessKey -Name HostName -Value $VpsIp
+    Set-ItemProperty -Path $sessKey -Name PortNumber -Value ([int]$SftpPublicPort) -Type DWord
+    Set-ItemProperty -Path $sessKey -Name UserName -Value $SftpUser
+    Set-ItemProperty -Path $sessKey -Name Password -Value $encPass
+    $siteCreated = $true
+    Write-Info "已创建 WinSCP 加密存储站点 Home-SFTP（密码不落明文，仅当前 Windows 用户可解）"
+} catch {
+    Write-Warn2 "创建加密存储站点失败，回退为 URL 内嵌方案：$($_.Exception.Message)"
+}
+
 # ---------------------------------------------------------------- 2. 生成桌面文件
 Write-Step 2 "生成桌面 Home-SFTP 工具集"
 
@@ -158,15 +185,25 @@ $outDir  = Join-Path $desktop 'Home-SFTP'
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
 # 2.1 双击连接（注释用 ASCII，规避 cmd 代码页问题）
-$connectCmd = @"
+if ($siteCreated) {
+    $connectCmd = @"
+@echo off
+rem Double-click to open the stored WinSCP session "Home-SFTP".
+rem Password is stored encrypted by WinSCP (bound to this Windows user),
+rem NOT in this file.
+start "" "$winscpExe" "Home-SFTP"
+"@
+} else {
+    $connectCmd = @"
 @echo off
 rem Double-click to open WinSCP session for home SFTP.
 rem NOTE: password is stored in plain text in this file - do not share it.
 start "" "$winscpExe" "sftp://$encUser`:$encPass@$VpsIp`:$SftpPublicPort"
 "@
+}
 Write-FileNoBom -Path (Join-Path $outDir '连接SFTP.cmd') -Content $connectCmd
 
-# 2.2 命令行上传脚本（凭据已内置）
+# 2.2 命令行上传脚本（加密站点可用时不内嵌密码，否则回退为凭据内置）
 $uploadTemplate = @'
 # 由 setup-client.ps1 自动生成 —— 命令行上传文件/目录到家庭 SFTP
 # 用法：
@@ -190,7 +227,7 @@ if (-not $item) { Write-Host "本地路径不存在：$Path" -ForegroundColor Re
 $putCmd = if ($item.PSIsContainer) { 'put -r -resume' } else { 'put -resume' }
 Write-Host "上传 $($item.FullName) -> $RemoteDir ..."
 & $WinscpCom /command `
-    "open sftp://$($User):$EncPass@$($SftpHost):$Port/ -timeout=15" `
+    "__OPEN_LINE__" `
     "cd $RemoteDir" `
     "$putCmd `"$($item.FullName)`"" `
     "exit"
@@ -200,12 +237,24 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "上传完成" -ForegroundColor Green
 '@
+# 生成的上传脚本打开方式：加密站点按名打开（无凭据）；回退方案用凭据 URL
+$openLine = if ($siteCreated) {
+    'open Home-SFTP'
+} else {
+    'open sftp://$($User):$EncPass@$($SftpHost):$Port/ -timeout=15'
+}
 $uploadPs1 = $uploadTemplate.
     Replace('__VPS_IP__', $VpsIp).
     Replace('__PORT__', $SftpPublicPort).
     Replace('__USER__', $SftpUser).
-    Replace('__ENC_PASS__', $encPass).
+    Replace('__OPEN_LINE__', $openLine).
     Replace('__WINSCP_COM__', $winscpCom)
+if ($siteCreated) {
+    # 加密站点方案：生成脚本里不出现任何密码（含加密串）
+    $uploadPs1 = $uploadPs1.Replace('$EncPass   = ''__ENC_PASS__''', "`$EncPass   = ''")
+} else {
+    $uploadPs1 = $uploadPs1.Replace('__ENC_PASS__', $encPass)
+}
 Write-FileBom -Path (Join-Path $outDir 'upload.ps1') -Content $uploadPs1
 
 # 2.3 给上传者的一页说明
@@ -256,5 +305,9 @@ Write-Step 3 "完成"
 Write-Info "双击桌面 Home-SFTP\连接SFTP.cmd 即可打开 SFTP（首次连接需接受一次主机指纹）"
 Write-Info "命令行上传示例："
 Write-Host "    .\upload.ps1 -Path C:\data\report.pdf" -ForegroundColor White
-Write-Warn2 "生成的文件内含明文密码，请勿转发；给上传者发『上传者连接说明.txt』前请先改掉其中密码一栏"
+if ($siteCreated) {
+    Write-Info "桌面工具使用 WinSCP 加密存储站点 Home-SFTP：明文密码不落盘，给上传者的说明照旧发『上传者连接说明.txt』"
+} else {
+    Write-Warn2 "生成的文件内含明文密码，请勿转发；给上传者发『上传者连接说明.txt』前请先改掉其中密码一栏"
+}
 Invoke-Native 'explorer.exe' @($outDir) | Out-Null

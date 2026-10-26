@@ -26,7 +26,7 @@ if (Test-Path $stateFile) {
     try {
         (Get-Content $stateFile -Raw | ConvertFrom-Json).PSObject.Properties |
             ForEach-Object { $state[$_.Name] = $_.Value }
-    } catch { }
+    } catch { $state = @{} }   # 状态文件损坏时按全新基线重建（自愈）
 }
 
 $changed = $false

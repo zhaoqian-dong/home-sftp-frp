@@ -36,7 +36,6 @@ if (-not $EnvFile) {
 $FrpVersion   = '0.71.1'   # 默认 frp 版本（可被 .env 的 FRP_VERSION 覆盖）
 $WinSwVersion = '2.12.0'   # WinSW（Windows 服务包装器）版本
 $FrpDir       = 'C:\Program Files\frp'
-$SshdConfig   = "$env:ProgramData\ssh\sshd_config"
 $SftpGroup    = 'sftpusers'
 
 # ---------------------------------------------------------------- 通用工具

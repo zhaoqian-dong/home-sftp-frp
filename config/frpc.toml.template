@@ -3,7 +3,8 @@
 #
 # 注意：本文件仅作参考展示。实际部署时由
 #       scripts/windows/setup-home-windows.ps1 内嵌模板生成到
-#       C:\Program Files\frp\frpc.toml（占位符 __XXX__ 会被替换）
+#       C:\Program Files\frp\frpc.toml（占位符 __XXX__ 会被替换）。
+#       本模板与脚本内嵌模板的一致性由 CI（tests/check_templates.py）强制校验。
 #
 # 数据链路：外网上传者 -> VPS:SFTP_PUBLIC_PORT -> (frp 隧道) -> 本机 127.0.0.1:22
 # ============================================================================

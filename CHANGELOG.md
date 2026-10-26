@@ -3,6 +3,19 @@
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
 项目暂未启用版本号，按日期分组，最新在前。
 
+## 2026-10-26 · 仓库工程化
+
+- **CI（GitHub Actions）**：三个 job——`shellcheck`（bash）、`PSScriptAnalyzer`
+  （PowerShell，项目级豁免清单见 `PSScriptAnalyzerSettings.psd1`，每条豁免附理由）、
+  frp 配置验证（渲染两端内嵌模板 → 真实 frpc/frps 二进制 `verify`）；
+- **模板防漂移**：`config/` 参考模板与脚本内嵌模板的一致性由 CI 逐键强制校验
+  （`tests/check_templates.py`；历史上 `log.*` 位置问题即此类漂移），模板头注释同步说明；
+- **桌面工具凭据升级**：`setup-client.ps1` 优先把站点写入 WinSCP 加密存储
+  （WinSCPnet 加密函数写入注册表，仅当前 Windows 用户可解），生成的 连接SFTP.cmd 与
+  upload.ps1 不再内嵌明文密码；加密创建失败时自动回退旧的 URL 内嵌方案；
+- 新增 `SECURITY.md`（漏洞报告渠道与范围界定）、`CONTRIBUTING.md`（风格约定、
+  测试要求、真机教训清单）、`README.en.md` 英文版（中英互链）。
+
 ## 2026-10-26 · 真机验收与修复
 
 在 Parallels Windows 11 ARM64（中文版专业版）+ 腾讯云 Ubuntu 22.04 真机完成端到端验收：

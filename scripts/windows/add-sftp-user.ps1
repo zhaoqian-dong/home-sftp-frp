@@ -216,7 +216,7 @@ try {
             Write-Warn2 "已将 $UserName 移出管理员组"
         }
     }
-} catch { }
+} catch { Write-Warn2 "管理员组检查跳过：$($_.Exception.Message)" }
 
 # 拒绝该组本地/RDP 交互登录（组级，一次配置对全部成员生效）
 try {

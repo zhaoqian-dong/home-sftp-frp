@@ -33,7 +33,6 @@ if (-not $EnvFile) {
     $EnvFile = Join-Path $dir '.env'
 }
 
-$SftpGroup  = 'sftpusers'
 $SshdConfig = "$env:ProgramData\ssh\sshd_config"
 
 # ---------------------------------------------------------------- 通用工具

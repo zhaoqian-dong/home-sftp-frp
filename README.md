@@ -6,6 +6,8 @@
 
 让外网用户安全地把文件传到你家里的 Windows 电脑 —— 无需公网 IP、无需路由器端口映射、无需暴露家庭网络
 
+**简体中文** · [English](README.en.md)
+
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Ubuntu-blueviolet)](#-架构)
 [![frp](https://img.shields.io/badge/frp-v0.71.1-FF4A65?logo=githubactions&logoColor=white)](https://github.com/fatedier/frp)
 [![Bash](https://img.shields.io/badge/Bash-5%2B-4EAA25?logo=gnu-bash&logoColor=white)](#-项目结构)
@@ -77,15 +79,22 @@ flowchart LR
 
 ```
 home-sftp-frp/
-├── README.md                        ← 本文件
+├── README.md                        ← 本文件（简体中文）
+├── README.en.md                     ← English documentation
 ├── CHANGELOG.md                     ← 更新日志
+├── SECURITY.md                      ← 漏洞报告渠道与范围界定
+├── CONTRIBUTING.md                  ← 贡献指南（风格约定 / 测试要求 / 历史教训）
 ├── LICENSE
 ├── .env.example                     ← 唯一配置源（复制为 .env 使用）
 ├── docs/
 │   └── vps-rental-guide.md          ← 租服务器指南（含机型推荐与优惠链接）
-├── config/                          ← 仅供参考展示；实际配置由脚本内嵌模板生成
+├── config/                          ← 参考模板；与脚本内嵌模板的一致性由 CI 强制校验
 │   ├── frps.toml.template
 │   └── frpc.toml.template
+├── .github/workflows/ci.yml         ← CI：shellcheck + PSScriptAnalyzer + 模板渲染
+│                                       verify + config/ 模板一致性校验
+├── PSScriptAnalyzerSettings.psd1    ← PSSA 项目级豁免清单（含理由）
+├── tests/                           ← CI 辅助：内嵌模板渲染 / 模板一致性检查
 └── scripts/
     ├── setup-vps.sh                 ← ① VPS 端一键部署（Ubuntu，root 运行）
     ├── check-vps.sh                 ← ⑥ VPS 端一键自检

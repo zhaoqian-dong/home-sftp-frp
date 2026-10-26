@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  shellcheck:
+    name: shellcheck (bash)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run shellcheck
+        run: shellcheck -x scripts/*.sh
+
+  psscriptanalyzer:
+    name: PSScriptAnalyzer (PowerShell)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          $findings = Invoke-ScriptAnalyzer -Path scripts/windows -Recurse -Settings PSScriptAnalyzerSettings.psd1
+          $findings | ForEach-Object { "{0}:{1} [{2}] {3}" -f $_.ScriptPath, $_.Line, $_.RuleName, $_.Message }
+          if ($findings.Count -gt 0) { exit 1 }
+
+  frp-config:
+    name: frp 配置渲染 + verify + 模板一致性
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 下载 frp（固化官方 sha256 校验）
+        run: |
+          curl -fsSL -o /tmp/frp.tar.gz https://github.com/fatedier/frp/releases/download/v0.71.1/frp_0.71.1_linux_amd64.tar.gz
+          echo "1d9875210972a5d1a62b2dc4c48df45ab0af05d3ca1b5e494a014428259df803  /tmp/frp.tar.gz" | sha256sum -c --status
+          tar -xzf /tmp/frp.tar.gz -C /tmp
+      - name: 渲染脚本内嵌模板并跑 frpc/frps verify
+        run: |
+          bash tests/render-frps.sh
+          pwsh -File tests/render-frpc.ps1
+          /tmp/frp_0.71.1_linux_amd64/frps verify -c /tmp/ci-artifacts/frps.toml
+          /tmp/frp_0.71.1_linux_amd64/frpc verify -c /tmp/ci-artifacts/frpc.toml
+      - name: config/ 模板一致性校验（防漂移）
+        run: python3 tests/check_templates.py

@@ -25,8 +25,7 @@ FRPS_LOG="/var/log/frps.log"
 
 # 内置的官方 release sha256（来源：各版本随 frp 发布的 frp_sha256_checksums.txt）。
 # 升级 FRP_VERSION 时在此补充新版本条目；未内置的版本脚本会现场从官方拉取 checksums
-FRP_SHA256_V0_71_1_AMD64="1d9875210972a5d1a62b2dc4c48df45ab0af05d3ca1b5e494a014428259df803"
-FRP_SHA256_V0_71_1_ARM64="8edf590b0c396fa42f9c147121a76af83cfc2002b08f5aef0ea1008c43482019"
+# （供下方 case "${FRP_VERSION}_${FRP_ARCH_U}" 查表使用）
 
 # ---------- 输出工具 ----------
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -125,9 +124,12 @@ if [ "$NEED_INSTALL" -eq 1 ]; then
     trap 'rm -rf "$TMP_DIR"' EXIT
 
     # 期望 sha256：内置值优先；未内置的版本现场从官方 checksums 获取
-    FRP_ARCH_U="$(echo "${FRP_ARCH}" | tr 'a-z' 'A-Z')"
-    VARNAME="FRP_SHA256_V$(echo "${FRP_VERSION}" | tr '.' '_')_${FRP_ARCH_U}"
-    FRP_PKG_SHA256="${!VARNAME:-}"
+    FRP_ARCH_U="$(echo "${FRP_ARCH}" | tr '[:lower:]' '[:upper:]')"
+    case "${FRP_VERSION}_${FRP_ARCH_U}" in
+        0.71.1_AMD64) FRP_PKG_SHA256="1d9875210972a5d1a62b2dc4c48df45ab0af05d3ca1b5e494a014428259df803" ;;
+        0.71.1_ARM64) FRP_PKG_SHA256="8edf590b0c396fa42f9c147121a76af83cfc2002b08f5aef0ea1008c43482019" ;;
+        *)            FRP_PKG_SHA256="" ;;
+    esac
     if [ -z "$FRP_PKG_SHA256" ]; then
         info "版本 v${FRP_VERSION} 未内置校验值，从官方获取 frp_sha256_checksums.txt..."
         if curl -fsSL --connect-timeout 10 --max-time 60 \

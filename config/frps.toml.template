@@ -2,7 +2,8 @@
 # frps 服务端配置模板（公网 VPS，Ubuntu）
 #
 # 注意：本文件仅作参考展示。实际部署时由 scripts/setup-vps.sh 内嵌模板
-#       生成到 /etc/frp/frps.toml（占位符 __XXX__ 会被替换为 .env 中的值）
+#       生成到 /etc/frp/frps.toml（占位符 __XXX__ 会被替换为 .env 中的值）。
+#       本模板与脚本内嵌模板的一致性由 CI（tests/check_templates.py）强制校验。
 # 参考文档：https://gofrp.org/docs/
 # ============================================================================
 
