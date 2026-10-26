@@ -21,10 +21,18 @@
 #>
 
 param(
-    [string]$EnvFile = (Join-Path $PSScriptRoot '.env')
+    [string]$EnvFile
 )
 
 $ErrorActionPreference = 'Stop'
+# .env 默认路径在脚本体里解析：param 默认值中的 $PSScriptRoot 在 Windows
+# PowerShell 5.1 真机实测可能为空，body 中配合 $MyInvocation 兜底才可靠
+if (-not $EnvFile) {
+    $dir = $PSScriptRoot
+    if (-not $dir) { $dir = Split-Path -Parent $MyInvocation.MyCommand.Path }
+    $EnvFile = Join-Path $dir '.env'
+}
+
 $FrpVersion   = '0.71.1'   # 默认 frp 版本（可被 .env 的 FRP_VERSION 覆盖）
 $WinSwVersion = '2.12.0'   # WinSW（Windows 服务包装器）版本
 $FrpDir       = 'C:\Program Files\frp'
@@ -73,6 +81,20 @@ function Get-EnvMap {
 # 提供 $Sha256 时逐源校验，不符则丢弃换下一源 —— 镜像投毒被挡在校验之外
 function Invoke-Download {
     param([string[]]$Urls, [string]$OutFile, [int]$MinBytes = 100000, [string]$Sha256 = '')
+    # 目标文件已存在且校验通过时直接复用（弱网/离线：手动下载放到 %TEMP% 再重跑）
+    if (Test-Path $OutFile) {
+        $reuse = $false
+        if ((Get-Item $OutFile).Length -ge $MinBytes) {
+            if ($Sha256) {
+                $actual = (Get-FileHash -Path $OutFile -Algorithm SHA256).Hash.ToLower()
+                if ($actual -eq $Sha256.ToLower()) { $reuse = $true }
+            } else {
+                $reuse = $true
+            }
+        }
+        if ($reuse) { Write-Info "检测到 $OutFile 已存在且校验通过，跳过下载"; return }
+        Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
+    }
     foreach ($u in $Urls) {
         Write-Info "下载：$u"
         $rc = Invoke-Native 'curl.exe' @('-fsSL', '--connect-timeout', '10', '--retry', '2', '-o', $OutFile, $u)
@@ -133,6 +155,7 @@ function Grant-SftpGroupNoInteractiveLogon {
     $sid    = (Get-LocalGroup -Name $GroupName).SID.Value
     $export = Join-Path $env:TEMP 'secedit-export.inf'
     $cfg    = Join-Path $env:TEMP 'secedit-sftp.inf'
+    $db     = Join-Path $env:TEMP 'secedit-sftp.sdb'
     if ((Invoke-Native 'secedit.exe' @('/export', '/cfg', $export, '/quiet')) -ne 0) {
         throw 'secedit /export 失败'
     }
@@ -140,9 +163,23 @@ function Grant-SftpGroupNoInteractiveLogon {
     foreach ($right in @('SeDenyInteractiveLogonRight', 'SeDenyRemoteInteractiveLogonRight')) {
         $line = Get-Content -Path $export | Where-Object { $_ -match "^$right\s*=" } | Select-Object -First 1
         $values = @()
-        if ($line) { $values = ($line -split '=', 2)[1].Trim() -split '\s*,\s*' | Where-Object { $_ } }
+        if ($line) {
+            foreach ($v in (($line -split '=', 2)[1].Trim() -split '\s*,\s*')) {
+                if (-not $v) { continue }
+                if ($v -match '^\*') { $values += $v; continue }
+                # 导出里的裸账户名（如 Guest）在全新 db 下 secedit 解析不了，先翻译成 SID
+                try {
+                    $values += "*" + ([System.Security.Principal.NTAccount]$v).Translate(
+                        [System.Security.Principal.SecurityIdentifier]).Value
+                } catch { $values += $v }
+            }
+        }
         if ($values -notcontains "*$sid") { $values += "*$sid" }
-        $rights[$right] = $values -join ','
+        # Windows 默认拒绝 Guest 交互登录；防止历史版本/意外配置丢失该条目
+        if ($right -eq 'SeDenyInteractiveLogonRight' -and $values -notcontains '*S-1-5-32-546') {
+            $values += '*S-1-5-32-546'
+        }
+        $rights[$right] = ($values | Select-Object -Unique) -join ','
     }
     $nl = "`r`n"
     $inf = "[Unicode]$nl" +
@@ -154,11 +191,16 @@ function Grant-SftpGroupNoInteractiveLogon {
         'signature="$CHICAGO$"' + $nl +
         'Revision=1' + $nl
     [System.IO.File]::WriteAllText($cfg, $inf, (New-Object System.Text.UnicodeEncoding))
-    if ((Invoke-Native 'secedit.exe' @('/configure', '/db',
-        "$env:windir\security\database\secedit.sdb", '/cfg', $cfg, '/quiet')) -ne 0) {
+    # /db 必须用全新数据库文件（secedit 自动创建）：真机实测对系统已有 secedit.sdb
+    # 执行 /configure 会直接报参数错误；全新 db 只应用本 INF 中的权限项，系统其余
+    # 策略不受影响（SeDeny 的既有值如 Guest 已在上方合并保留）
+    if (Test-Path $db) { Remove-Item $db -Force }
+    # 真机实测：PowerShell 里 & secedit.exe 直调 /configure 无论何种参数都静默返回 1
+    # （/export 不受影响）；必须经由 cmd /c 调用，且 /db 用全新数据库（原因见上）
+    if ((Invoke-Native 'cmd.exe' @('/c', "secedit /configure /db `"$db`" /cfg `"$cfg`" /quiet")) -ne 0) {
         throw 'secedit /configure 失败'
     }
-    Remove-Item -LiteralPath $export, $cfg -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $export, $cfg, $db -Force -ErrorAction SilentlyContinue
 }
 
 # ---------------------------------------------------------------- 0. 前置检查

@@ -27,10 +27,18 @@ param(
     [Parameter(Mandatory = $true, HelpMessage = '上传账号用户名（小写字母开头，3-32位小写字母/数字/下划线）')]
     [string]$UserName,
     [string]$Password,
-    [string]$EnvFile = (Join-Path $PSScriptRoot '.env')
+    [string]$EnvFile
 )
 
 $ErrorActionPreference = 'Stop'
+# .env 默认路径在脚本体里解析：param 默认值中的 $PSScriptRoot 在 Windows
+# PowerShell 5.1 真机实测可能为空，body 中配合 $MyInvocation 兜底才可靠
+if (-not $EnvFile) {
+    $dir = $PSScriptRoot
+    if (-not $dir) { $dir = Split-Path -Parent $MyInvocation.MyCommand.Path }
+    $EnvFile = Join-Path $dir '.env'
+}
+
 $SftpGroup  = 'sftpusers'
 $SshdConfig = "$env:ProgramData\ssh\sshd_config"
 
@@ -98,6 +106,7 @@ function Grant-SftpGroupNoInteractiveLogon {
     $sid    = (Get-LocalGroup -Name $GroupName).SID.Value
     $export = Join-Path $env:TEMP 'secedit-export.inf'
     $cfg    = Join-Path $env:TEMP 'secedit-sftp.inf'
+    $db     = Join-Path $env:TEMP 'secedit-sftp.sdb'
     if ((Invoke-Native 'secedit.exe' @('/export', '/cfg', $export, '/quiet')) -ne 0) {
         throw 'secedit /export 失败'
     }
@@ -105,9 +114,23 @@ function Grant-SftpGroupNoInteractiveLogon {
     foreach ($right in @('SeDenyInteractiveLogonRight', 'SeDenyRemoteInteractiveLogonRight')) {
         $line = Get-Content -Path $export | Where-Object { $_ -match "^$right\s*=" } | Select-Object -First 1
         $values = @()
-        if ($line) { $values = ($line -split '=', 2)[1].Trim() -split '\s*,\s*' | Where-Object { $_ } }
+        if ($line) {
+            foreach ($v in (($line -split '=', 2)[1].Trim() -split '\s*,\s*')) {
+                if (-not $v) { continue }
+                if ($v -match '^\*') { $values += $v; continue }
+                # 导出里的裸账户名（如 Guest）在全新 db 下 secedit 解析不了，先翻译成 SID
+                try {
+                    $values += "*" + ([System.Security.Principal.NTAccount]$v).Translate(
+                        [System.Security.Principal.SecurityIdentifier]).Value
+                } catch { $values += $v }
+            }
+        }
         if ($values -notcontains "*$sid") { $values += "*$sid" }
-        $rights[$right] = $values -join ','
+        # Windows 默认拒绝 Guest 交互登录；防止历史版本/意外配置丢失该条目
+        if ($right -eq 'SeDenyInteractiveLogonRight' -and $values -notcontains '*S-1-5-32-546') {
+            $values += '*S-1-5-32-546'
+        }
+        $rights[$right] = ($values | Select-Object -Unique) -join ','
     }
     $nl = "`r`n"
     $inf = "[Unicode]$nl" +
@@ -119,11 +142,17 @@ function Grant-SftpGroupNoInteractiveLogon {
         'signature="$CHICAGO$"' + $nl +
         'Revision=1' + $nl
     [System.IO.File]::WriteAllText($cfg, $inf, (New-Object System.Text.UnicodeEncoding))
-    if ((Invoke-Native 'secedit.exe' @('/configure', '/db',
-        "$env:windir\security\database\secedit.sdb", '/cfg', $cfg, '/quiet')) -ne 0) {
+    # /db 必须用全新数据库文件（secedit 自动创建）：真机实测对系统已有 secedit.sdb
+    # 执行 /configure 会直接报参数错误；全新 db 只应用本 INF 中的权限项，系统其余
+    # 策略不受影响（SeDeny 的既有值如 Guest 已在上方合并保留）。
+    # 与 setup-home-windows.ps1 保持同一实现；改这里时请同步那边
+    if (Test-Path $db) { Remove-Item $db -Force }
+    # 真机实测：PowerShell 里 & secedit.exe 直调 /configure 无论何种参数都静默返回 1
+    # （/export 不受影响）；必须经由 cmd /c 调用，且 /db 用全新数据库（原因见上）
+    if ((Invoke-Native 'cmd.exe' @('/c', "secedit /configure /db `"$db`" /cfg `"$cfg`" /quiet")) -ne 0) {
         throw 'secedit /configure 失败'
     }
-    Remove-Item -LiteralPath $export, $cfg -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $export, $cfg, $db -Force -ErrorAction SilentlyContinue
 }
 
 # ---------------------------------------------------------------- 0. 前置检查
@@ -167,7 +196,7 @@ if ($existing) {
     Write-Info "用户 $UserName 已存在，重置密码与属性"
     Set-LocalUser -Name $UserName -Password $secure
     Set-LocalUser -Name $UserName -PasswordNeverExpires $true
-    Set-LocalUser -Name $UserName -UserMayNotChangePassword $true
+    Set-LocalUser -Name $UserName -UserMayChangePassword:$false   # Set-LocalUser 只有正向形参数（真机验收发现）
     Set-LocalUser -Name $UserName -Description 'SFTP upload user (home-sftp-frp)'
 } else {
     New-LocalUser -Name $UserName -Password $secure `

@@ -3,6 +3,30 @@
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
 项目暂未启用版本号，按日期分组，最新在前。
 
+## 2026-10-26 · 真机验收与修复
+
+在 Parallels Windows 11 ARM64（中文版专业版）+ 腾讯云 Ubuntu 22.04 真机完成端到端验收：
+部署七步全通、账号创建/重置、secedit 拒绝登录、check-home 全绿（15/0/0）、
+公网全链路真实上传（外网 → 云防火墙 → frps → 隧道 → chroot /upload）、删除与卸载回程。
+验收暴露并修复 4 个静态检查无法发现的 bug：
+
+- **secedit /configure 在真实 Windows 上必然失败**：改用全新数据库文件
+  （系统已有 secedit.sdb 会直接报参数错误）并经由 `cmd /c` 调用
+  （PowerShell 直调无论何种参数都静默返回 1）；
+- **param 默认值中的 `$PSScriptRoot` 真机实测可能为空**：8 个脚本的 `.env`
+  默认路径改为脚本体解析 + `$MyInvocation` 兜底；
+- **重置账号流程中途失败**：`Set-LocalUser` 误用了只存在于 `New-LocalUser` 的
+  `-UserMayNotChangePassword` 参数，更正为 `-UserMayChangePassword:$false`；
+- **Guest 默认拒绝交互登录条目可能丢失**：合并时将导出中的裸账户名翻译为 SID
+  （全新 db 下 secedit 解析不了裸名），并兜底确保 `*S-1-5-32-546` 存在。
+
+其他：
+
+- `Invoke-Download` 支持复用 `%TEMP%` 中已存在且 sha256 校验通过的文件，
+  "手动下载后重跑"的离线路径正式落地（弱网环境可用）；
+- ARM64 兼容性结论：Windows 11 ARM64 经 x64 模拟运行 amd64 版 frpc 全链路可用，
+  已记录到 README 已知限制。
+
 ## 2026-10-26 · 安全加固
 
 - **frps 端口白名单**：`allowPorts` 锁定到 SFTP 公网端口 + `maxPortsPerClient = 1`——

@@ -21,10 +21,18 @@ param(
     [Parameter(Mandatory = $true, HelpMessage = '要删除的上传账号用户名')]
     [string]$UserName,
     [switch]$DeleteData,
-    [string]$EnvFile = (Join-Path $PSScriptRoot '.env')
+    [string]$EnvFile
 )
 
 $ErrorActionPreference = 'Stop'
+# .env 默认路径在脚本体里解析：param 默认值中的 $PSScriptRoot 在 Windows
+# PowerShell 5.1 真机实测可能为空，body 中配合 $MyInvocation 兜底才可靠
+if (-not $EnvFile) {
+    $dir = $PSScriptRoot
+    if (-not $dir) { $dir = Split-Path -Parent $MyInvocation.MyCommand.Path }
+    $EnvFile = Join-Path $dir '.env'
+}
+
 $SftpGroup  = 'sftpusers'
 $SshdConfig = "$env:ProgramData\ssh\sshd_config"
 
