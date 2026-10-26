@@ -1,9 +1,13 @@
 # 更新日志
 
-格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
-项目暂未启用版本号，按日期分组，最新在前。
+格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；最新在前。
+自 [1.0] 起启用语义化版本号，此前的按日期分组即 1.0 的开发历史。
 
-## 2026-10-26 · 仓库工程化
+## [1.0] - 2026-10-26
+
+以下为本版本包含的全部变更（按完成顺序）。
+
+### 仓库工程化
 
 - **CI（GitHub Actions）**：三个 job——`shellcheck`（bash）、`PSScriptAnalyzer`
   （PowerShell，项目级豁免清单见 `PSScriptAnalyzerSettings.psd1`，每条豁免附理由）、
@@ -16,7 +20,7 @@
 - 新增 `SECURITY.md`（漏洞报告渠道与范围界定）、`CONTRIBUTING.md`（风格约定、
   测试要求、真机教训清单）、`README.en.md` 英文版（中英互链）。
 
-## 2026-10-26 · 真机验收与修复
+### 真机验收与修复
 
 在 Parallels Windows 11 ARM64（中文版专业版）+ 腾讯云 Ubuntu 22.04 真机完成端到端验收：
 部署七步全通、账号创建/重置、secedit 拒绝登录、check-home 全绿（15/0/0）、
@@ -40,7 +44,7 @@
 - ARM64 兼容性结论：Windows 11 ARM64 经 x64 模拟运行 amd64 版 frpc 全链路可用，
   已记录到 README 已知限制。
 
-## 2026-10-26 · 安全加固
+### 安全加固
 
 - **frps 端口白名单**：`allowPorts` 锁定到 SFTP 公网端口 + `maxPortsPerClient = 1`——
   token 泄露时攻击者也无法在 VPS 上另开反向代理端口当跳板；
@@ -54,7 +58,7 @@
 - **VPS 自动安全更新**：安装并启用 unattended-upgrades；
 - `check-vps.sh` 新增 allowPorts 与自动更新检查；`uninstall-vps.sh` 兼容删除 limit/allow 两种规则。
 
-## 2026-10-26 · 功能扩展
+### 功能扩展
 
 - **账号全生命周期**：新增 `list-sftp-users.ps1`（账号/占用/配额一览，游离成员告警）与
   `remove-sftp-user.ps1`（删用户、清配额与 sshd 配置块；数据目录默认保留，`-DeleteData` 连数据删）；
